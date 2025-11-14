@@ -15,7 +15,7 @@ using offset_t = page_id_t;
 
 // Page size is now configurable via kvcached initialization
 extern size_t kPageSize;
-static constexpr size_t kStartAddr = 0x1f0'000'000'000;
+static constexpr size_t kStartAddr = 0x2'000'000'00;  // 8GB (reduced for WSL2 multiprocess compatibility)
 
 static constexpr page_id_t INV_PAGE_ID = -1;
 static constexpr page_id_t ZERO_PAGE_ID = INV_PAGE_ID - 1;
