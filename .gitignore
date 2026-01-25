@@ -177,6 +177,14 @@ benchmarks/bench_latency_benefit/plot*
 benchmarks/gsm8k/*.jsonl
 benchmarks/gsm8k/*.txt
 
+# unified_benchmark.py results
+benchmarks/benchmark_results*/
+benchmarks/test_results*/
+benchmarks/multi_model_results/
+benchmarks/ondemand_test/
+benchmarks/results/
+benchmarks/test_fix/
+
 # tools
 tools/addlicense
 tools/.addlicense.lock
