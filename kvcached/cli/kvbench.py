@@ -23,7 +23,7 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Deque, Dict, List, Optional, Tuple
+from typing import Any, Deque, Dict, List, Optional, TextIO, Tuple
 from urllib.error import URLError
 from urllib.request import urlopen
 
@@ -502,8 +502,8 @@ class BenchmarkMonitor:
         self.refresh_rate = refresh_rate
         self.graph_history = graph_history
         self.model_metrics: Dict[str, ModelMetrics] = {}
-        self.csv_writer = None
-        self.csv_file = None
+        self.csv_writer: Optional[Any] = None
+        self.csv_file: Optional[TextIO] = None
         self.time_series = TimeSeriesBuffer(max_points=graph_history)
 
     def _init_csv(self):
@@ -585,7 +585,8 @@ class BenchmarkMonitor:
                     f"{gpu_pct:.2f}",
                 ]
             )
-            self.csv_file.flush()
+            if self.csv_file:
+                self.csv_file.flush()
 
     def _close_csv(self):
         """Close CSV file."""
@@ -661,8 +662,8 @@ class BenchmarkMonitor:
                 stdscr.addstr(row, 0, "[")
                 stdscr.addstr(bar, curses.color_pair(color) if use_colors else 0)
                 stdscr.addstr("]")
-                info = f" {_format_size(gpu_info.used_bytes)} / {_format_size(gpu_info.total_bytes)} ({gpu_pct:.1f}%)"
-                stdscr.addstr(info[:width - bar_width - 3])
+                gpu_detail = f" {_format_size(gpu_info.used_bytes)} / {_format_size(gpu_info.total_bytes)} ({gpu_pct:.1f}%)"
+                stdscr.addstr(gpu_detail[:width - bar_width - 3])
                 row += 2
 
             # KVCache segments
