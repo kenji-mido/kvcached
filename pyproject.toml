@@ -46,6 +46,7 @@ dependencies = [
 [project.scripts]
 kvctl = "kvcached.cli.kvctl:main"
 kvtop = "kvcached.cli.kvtop:main"
+kvbench = "kvcached.cli.kvbench:main"
 
 [project.urls]
 Homepage = "https://github.com/ovg-project/kvcached"
