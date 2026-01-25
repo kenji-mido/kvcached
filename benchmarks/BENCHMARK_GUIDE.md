@@ -72,6 +72,61 @@
 - OOM を避けるため gpu-memory-utilization を慎重に設定する必要あり
 ```
 
+### KVcached が効果的なシナリオ
+
+**1. 開発・テスト環境**
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ 1台の GPU で複数モデルを同時に試したい                          │
+│                                                                 │
+│ Without KVcached:                                               │
+│   - gpu-memory-utilization を慎重に計算                        │
+│   - 3つ目のモデルを追加 → OOM で起動失敗                        │
+│                                                                 │
+│ With KVcached:                                                  │
+│   - 共有プールから動的割り当て                                  │
+│   - モデル追加が容易（使用中の分だけメモリ消費）                │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**2. マルチテナント推論**
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ 複数のアプリ/ユーザーが GPU リソースを共有                      │
+│                                                                 │
+│ Without KVcached:                                               │
+│   - 各テナントに固定メモリを割り当て                            │
+│   - テナント A がアイドルでもメモリは解放されない               │
+│   - リソースの無駄                                              │
+│                                                                 │
+│ With KVcached:                                                  │
+│   - アイドルテナントの KV cache は他テナントが使用可能          │
+│   - 効率的なリソース共有                                        │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**3. スパースなリクエストパターン**
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ 各モデルへのリクエストが散発的（同時アクティブが少ない）        │
+│                                                                 │
+│ 例: 翻訳モデル + 要約モデル + QA モデル                         │
+│     → 同時に使われることは稀                                    │
+│                                                                 │
+│ Without KVcached:                                               │
+│   - 3モデル分の KV cache を常に予約 → GPU メモリ不足            │
+│   - または、オンデマンドロード → TTFT 5〜30秒                   │
+│                                                                 │
+│ With KVcached:                                                  │
+│   - 全モデルのweightsをロード済み                               │
+│   - KV cache はアクティブなリクエストにのみ割り当て             │
+│   - TTFT ~50ms を維持                                           │
+└─────────────────────────────────────────────────────────────────┘
+```
+
 ### 比較サマリー
 
 ```
@@ -211,6 +266,7 @@ python tools/dev_copy_pth.py --check
 ### サーバー起動
 
 **KVcached あり:**
+
 ```bash
 export PATH=/usr/local/cuda-13.0/bin:$PATH
 export CUDA_HOME=/usr/local/cuda-13.0
@@ -226,6 +282,7 @@ python -m vllm.entrypoints.openai.api_server \
 ```
 
 **KVcached なし:**
+
 ```bash
 export PATH=/usr/local/cuda-13.0/bin:$PATH
 export CUDA_HOME=/usr/local/cuda-13.0
@@ -261,6 +318,7 @@ KVcached の真のメリットを確認するベンチマーク。
 ### サーバー起動（2モデル）
 
 **KVcached あり:**
+
 ```bash
 # ターミナル1: Model A
 export PATH=/usr/local/cuda-13.0/bin:$PATH
@@ -292,6 +350,7 @@ python -m vllm.entrypoints.openai.api_server \
 ```
 
 **KVcached なし:**
+
 ```bash
 # ターミナル1: Model A
 export PATH=/usr/local/cuda-13.0/bin:$PATH
@@ -371,6 +430,7 @@ vllm bench serve \
 | `--request-rate` | 1秒あたりのリクエスト数 | `5`, `10` |
 
 **複数モデル同時ベンチマーク:**
+
 ```bash
 # バックグラウンドで並列実行
 vllm bench serve --model meta-llama/Llama-3.2-1B --port 8080 --num-prompts 30 --request-rate 5 &
@@ -392,6 +452,7 @@ wait  # 両方の完了を待つ
 - 最初のモデルが完全に起動してから2つ目を起動
 
 ### nvcc が見つからない
+
 ```bash
 export PATH=/usr/local/cuda-13.0/bin:$PATH
 export CUDA_HOME=/usr/local/cuda-13.0
@@ -484,6 +545,7 @@ instances:
 ### コントローラーでの KVcached 有効/無効切り替え
 
 **KVcached を有効にする場合:**
+
 ```yaml
 kvcached_env:
   - "ENABLE_KVCACHED=true"
@@ -492,6 +554,7 @@ kvcached_env:
 ```
 
 **KVcached を無効にする場合:**
+
 ```yaml
 kvcached_env:
   - "ENABLE_KVCACHED=false"
@@ -643,6 +706,7 @@ BENCHMARK                    4.50 GB
 ```
 
 **動作中の変化:**
+
 ```
 アイドル:   [##------------------------------------------] 0.1 GB / 4.5 GB
 アクティブ: [##################--------------------------] 0.8 GB / 4.5 GB
@@ -749,6 +813,24 @@ cd benchmarks
 | `--max-model-len` | 最大シーケンス長 | `4096` |
 | `--output-dir` | 結果出力ディレクトリ | `./benchmark_results` |
 | `--skip-disabled` | KVcached 無効時のテストをスキップ | `False` |
+| `--include-ondemand` | オンデマンドロードベンチマークを含める（非常に遅い） | `False` |
+| `--ondemand-requests` | オンデマンドベンチマークのリクエスト数 | `6` |
+
+### オンデマンドロードベンチマーク（オプション）
+
+`--include-ondemand` フラグを指定すると、GPU メモリが制限された環境でのオンデマンドモデルロードをシミュレートします。
+
+**注意**: このベンチマークは非常に時間がかかります（各リクエストでモデルの起動・停止を行うため、1リクエストあたり20-60秒）。デフォルトでは無効化されています。
+
+```bash
+# オンデマンドベンチマークを含める（時間がかかる）
+/path/to/venv/bin/python unified_benchmark.py \
+  --models meta-llama/Llama-3.2-1B,Qwen/Qwen2.5-0.5B \
+  --include-ondemand \
+  --ondemand-requests 4
+```
+
+このベンチマークは、GPU メモリ不足時にモデルを動的にロード・アンロードするシナリオを示します。結果として TTFT が 5,000〜30,000ms になることが期待されます（通常の 50ms と比較）
 
 ### 出力ファイル
 

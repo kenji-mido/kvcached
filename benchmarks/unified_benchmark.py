@@ -26,7 +26,6 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-from urllib.error import URLError
 from urllib.request import urlopen
 
 # Add parent directory to path for imports
@@ -271,18 +270,6 @@ class UnifiedBenchmark:
         python_path = self._get_python_path()
 
         for i, (endpoint, model) in enumerate(zip(endpoints, self.config.models)):
-            port = endpoint.split(":")[1]
-            cmd = [
-                python_path,
-                "-m",
-                "vllm.entrypoints.openai.run_batch_inference",
-                "--model",
-                model,
-                "--port",
-                port,
-                "--num-prompts",
-                str(self.config.warmup_prompts),
-            ]
             # Simple warmup - just send a few requests
             try:
                 subprocess.run(
@@ -646,7 +633,186 @@ for i in range({self.config.warmup_prompts}):
             )
         print("=" * 60)
 
-    def run(self, skip_disabled: bool = False):
+    def run_ondemand_benchmark(self, num_requests: int = 6) -> dict:
+        """
+        Run on-demand loading benchmark (KVcached disabled, one model at a time).
+
+        Simulates a scenario where GPU memory is limited and only one model
+        can be loaded at a time. Each model switch requires stopping the
+        current server and starting a new one.
+
+        Returns dict with TTFT measurements including model load time.
+        """
+        print("\n" + "=" * 60)
+        print("RUNNING BENCHMARK: ON-DEMAND LOADING (KVcached DISABLED)")
+        print("=" * 60)
+        print("Simulating limited GPU memory - only one model loaded at a time")
+        print(f"Alternating {num_requests} requests between {len(self.config.models)} models")
+        print()
+
+        results = []
+        current_model_idx = -1
+        env = self._get_env(kvcached_enabled=False)
+        python_path = self._get_python_path()
+
+        # Use high GPU utilization since only one model at a time
+        high_util = 0.8
+
+        for i in range(num_requests):
+            # Alternate between models
+            target_model_idx = i % len(self.config.models)
+            target_model = self.config.models[target_model_idx]
+            port = self.config.base_port
+
+            print(f"\n[Request {i+1}/{num_requests}] Target: {target_model}")
+
+            # Check if we need to switch models
+            if target_model_idx != current_model_idx:
+                # Stop current server if running
+                if current_model_idx >= 0:
+                    print("  Stopping current model...")
+                    self.stop_servers()
+                    time.sleep(2)
+
+                # Start new server
+                print(f"  Starting {target_model}...")
+                load_start = time.time()
+
+                cmd = [
+                    python_path,
+                    "-m",
+                    "vllm.entrypoints.openai.api_server",
+                    "--model",
+                    target_model,
+                    "--port",
+                    str(port),
+                    "--host",
+                    "localhost",
+                    "--gpu-memory-utilization",
+                    str(high_util),
+                    "--max-model-len",
+                    str(self.config.max_model_len),
+                    "--disable-log-requests",
+                ]
+
+                proc = subprocess.Popen(
+                    cmd,
+                    env=env,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                )
+                self.server_processes = [proc]
+
+                # Wait for server to be ready
+                endpoint = f"localhost:{port}"
+                for _ in range(180):  # 3 minutes timeout
+                    if check_server_health(endpoint):
+                        break
+                    time.sleep(1)
+                else:
+                    print("  ERROR: Server failed to start")
+                    continue
+
+                load_time = time.time() - load_start
+                print(f"  Model loaded in {load_time:.1f}s")
+                current_model_idx = target_model_idx
+            else:
+                load_time = 0
+                print("  Model already loaded")
+
+            # Send a single request and measure TTFT
+            print("  Sending request...")
+            request_start = time.time()
+
+            try:
+                import json as json_module
+                import urllib.request
+
+                req_data = json_module.dumps({
+                    "model": target_model,
+                    "prompt": "Hello, how are you today? Please tell me",
+                    "max_tokens": 50,
+                    "temperature": 0.7,
+                }).encode("utf-8")
+
+                req = urllib.request.Request(
+                    f"http://localhost:{port}/v1/completions",
+                    data=req_data,
+                    headers={"Content-Type": "application/json"},
+                )
+
+                with urllib.request.urlopen(req, timeout=120) as resp:
+                    _ = json_module.loads(resp.read().decode("utf-8"))
+
+                request_time = time.time() - request_start
+                total_ttft = load_time + request_time
+
+                print(f"  Request completed in {request_time:.2f}s")
+                print(f"  Total TTFT (including load): {total_ttft:.2f}s ({total_ttft*1000:.0f}ms)")
+
+                results.append({
+                    "request_num": i + 1,
+                    "model": target_model,
+                    "model_switched": load_time > 0,
+                    "load_time_s": load_time,
+                    "request_time_s": request_time,
+                    "total_ttft_s": total_ttft,
+                    "total_ttft_ms": total_ttft * 1000,
+                })
+
+            except Exception as e:
+                print(f"  ERROR: {e}")
+                results.append({
+                    "request_num": i + 1,
+                    "model": target_model,
+                    "model_switched": load_time > 0,
+                    "load_time_s": load_time,
+                    "request_time_s": -1,
+                    "total_ttft_s": -1,
+                    "total_ttft_ms": -1,
+                    "error": str(e),
+                })
+
+        # Stop servers
+        self.stop_servers()
+
+        # Calculate summary
+        valid_results = [r for r in results if r["total_ttft_ms"] > 0]
+        switched_results = [r for r in valid_results if r["model_switched"]]
+        cached_results = [r for r in valid_results if not r["model_switched"]]
+
+        summary = {
+            "total_requests": len(results),
+            "successful_requests": len(valid_results),
+            "model_switches": len(switched_results),
+            "avg_ttft_ms_all": sum(r["total_ttft_ms"] for r in valid_results) / len(valid_results) if valid_results else 0,
+            "avg_ttft_ms_switched": sum(r["total_ttft_ms"] for r in switched_results) / len(switched_results) if switched_results else 0,
+            "avg_ttft_ms_cached": sum(r["total_ttft_ms"] for r in cached_results) / len(cached_results) if cached_results else 0,
+            "avg_load_time_s": sum(r["load_time_s"] for r in switched_results) / len(switched_results) if switched_results else 0,
+            "results": results,
+        }
+
+        # Print summary
+        print("\n" + "-" * 60)
+        print("ON-DEMAND LOADING SUMMARY")
+        print("-" * 60)
+        print(f"  Total requests:      {summary['total_requests']}")
+        print(f"  Model switches:      {summary['model_switches']}")
+        print(f"  Avg TTFT (all):      {summary['avg_ttft_ms_all']:.0f} ms")
+        print(f"  Avg TTFT (switched): {summary['avg_ttft_ms_switched']:.0f} ms")
+        print(f"  Avg TTFT (cached):   {summary['avg_ttft_ms_cached']:.0f} ms")
+        print(f"  Avg load time:       {summary['avg_load_time_s']:.1f} s")
+        print("-" * 60)
+
+        # Save results
+        filepath = self.config.output_dir / "ondemand_results.json"
+        with open(filepath, "w") as f:
+            json.dump(summary, f, indent=2)
+        print(f"Saved on-demand results to {filepath}")
+
+        return summary
+
+    def run(self, skip_disabled: bool = False, include_ondemand: bool = False, ondemand_requests: int = 6):
         """Run the full benchmark."""
         results = []
 
@@ -699,6 +865,12 @@ for i in range({self.config.warmup_prompts}):
 
             # Save summary
             self.save_summary(results)
+
+            # Run on-demand loading benchmark if requested
+            if include_ondemand:
+                self.stop_servers()
+                time.sleep(5)
+                self.run_ondemand_benchmark(num_requests=ondemand_requests)
 
         finally:
             self.stop_servers()
@@ -762,6 +934,17 @@ def main():
         action="store_true",
         help="Skip benchmark with KVcached disabled",
     )
+    parser.add_argument(
+        "--include-ondemand",
+        action="store_true",
+        help="Include on-demand loading benchmark (KVcached disabled, one model at a time)",
+    )
+    parser.add_argument(
+        "--ondemand-requests",
+        type=int,
+        default=6,
+        help="Number of requests for on-demand benchmark (default: 6, alternating between models)",
+    )
     args = parser.parse_args()
 
     config = BenchmarkConfig(
@@ -785,7 +968,11 @@ def main():
 
     signal.signal(signal.SIGINT, signal_handler)
 
-    benchmark.run(skip_disabled=args.skip_disabled)
+    benchmark.run(
+        skip_disabled=args.skip_disabled,
+        include_ondemand=args.include_ondemand,
+        ondemand_requests=args.ondemand_requests,
+    )
 
 
 if __name__ == "__main__":

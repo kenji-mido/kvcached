@@ -20,12 +20,12 @@ import os
 import re
 import time
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Deque, Dict, List, Optional, Tuple
-from urllib.request import urlopen
 from urllib.error import URLError
+from urllib.request import urlopen
 
 from kvcached.cli.utils import (
     SHM_DIR,
@@ -428,8 +428,6 @@ def _draw_ascii_graph(
     row += 1
 
     # Draw graph area
-    graph_chars = [" ", ".", ":", "-", "=", "+", "*", "#"]
-
     for y in range(graph_height):
         # Y-axis label
         y_val = max_val - (y / (graph_height - 1)) * (max_val - min_val) if graph_height > 1 else max_val
@@ -794,7 +792,7 @@ class BenchmarkMonitor:
                     if row + graph_height + 2 >= height - 1:
                         break
 
-                    rows_used = _draw_ascii_graph(
+                    _ = _draw_ascii_graph(
                         stdscr,
                         row,
                         col,
