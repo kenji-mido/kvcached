@@ -353,6 +353,7 @@ class TimeSeriesBuffer:
         self.request_rate: Deque[float] = deque(maxlen=max_points)
         self.ttft_ms: Deque[float] = deque(maxlen=max_points)
         self.timestamps: Deque[float] = deque(maxlen=max_points)
+        self.kvcache_available: bool = False  # Track if KVCache data is available
 
     def add_sample(
         self,
@@ -361,6 +362,7 @@ class TimeSeriesBuffer:
         gen_rate: float,
         req_rate: float,
         ttft_ms: float = 0.0,
+        kvcache_available: bool = False,
     ):
         """Add a sample to the buffer."""
         self.gpu_usage.append(gpu_pct)
@@ -369,6 +371,63 @@ class TimeSeriesBuffer:
         self.request_rate.append(req_rate)
         self.ttft_ms.append(ttft_ms)
         self.timestamps.append(time.time())
+        self.kvcache_available = kvcache_available
+
+
+def _draw_na_graph(
+    stdscr,
+    row: int,
+    col: int,
+    width: int,
+    height: int,
+    label: str,
+    unit: str,
+) -> int:
+    """Draw a placeholder graph showing N/A when data is not available.
+
+    Returns the number of rows used.
+    """
+    if height < 3 or width < 20:
+        return 0
+
+    screen_height, screen_width = stdscr.getmaxyx()
+    if row + height >= screen_height or col + width >= screen_width:
+        return 0
+
+    label_width = 8
+    graph_width = width - label_width - 2
+    graph_height = height - 2
+
+    # Draw title
+    title = f"{label} ({unit})"
+    try:
+        stdscr.addstr(row, col, title[:width], curses.A_BOLD)
+    except curses.error:
+        pass
+
+    # Draw N/A message in the center
+    na_msg = "N/A (KVcached disabled)"
+    center_row = row + 1 + graph_height // 2
+    center_col = col + label_width + (graph_width - len(na_msg)) // 2
+    try:
+        stdscr.addstr(center_row, center_col, na_msg, curses.A_DIM)
+    except curses.error:
+        pass
+
+    # Draw empty frame
+    for y in range(graph_height):
+        try:
+            stdscr.addstr(row + 1 + y, col + label_width, "|", curses.A_DIM)
+        except curses.error:
+            pass
+
+    # Draw X-axis
+    try:
+        stdscr.addstr(row + 1 + graph_height, col + label_width, "+" + "-" * (graph_width - 1) + ">", curses.A_DIM)
+    except curses.error:
+        pass
+
+    return height
 
 
 def _draw_ascii_graph(
@@ -756,7 +815,12 @@ class BenchmarkMonitor:
             avg_ttft = sum(ttft_values) / len(ttft_values) if ttft_values else 0.0
 
             kv_pct = 0.0
-            if first_kv_info and first_kv_info.reachable and first_kv_info.total_size > 0:
+            kvcache_available = (
+                first_kv_info is not None
+                and first_kv_info.reachable
+                and first_kv_info.total_size > 0
+            )
+            if kvcache_available and first_kv_info is not None:
                 kv_pct = (first_kv_info.used_size + first_kv_info.prealloc_size) / first_kv_info.total_size * 100
 
             self.time_series.add_sample(
@@ -765,6 +829,7 @@ class BenchmarkMonitor:
                 gen_rate=total_gen_rate,
                 req_rate=total_req_rate,
                 ttft_ms=avg_ttft,
+                kvcache_available=bool(kvcache_available),
             )
 
             # Draw time series graphs
@@ -778,34 +843,38 @@ class BenchmarkMonitor:
                 graph_width = min(70, width - 2)
                 graphs_per_row = 2 if width >= 140 else 1
 
-                # (data, label, unit, color, fixed_max)
+                # (data, label, unit, color, fixed_max, requires_kvcache)
                 graphs = [
-                    (self.time_series.gpu_usage, "GPU Mem", "%", 2, 100.0),  # yellow, 0-100%
-                    (self.time_series.kvcache_usage, "KVCache", "%", 4, 100.0),  # cyan, 0-100%
-                    (self.time_series.gen_tokens_rate, "Gen Rate", "tok/s", 1, None),  # green
-                    (self.time_series.request_rate, "Req Rate", "req/s", 5, None),  # magenta
-                    (self.time_series.ttft_ms, "TTFT", "ms", 3, None),  # red
+                    (self.time_series.gpu_usage, "GPU Mem", "%", 2, 100.0, False),  # yellow
+                    (self.time_series.kvcache_usage, "KVCache", "%", 4, 100.0, True),  # cyan
+                    (self.time_series.gen_tokens_rate, "Gen Rate", "tok/s", 1, None, False),  # green
+                    (self.time_series.request_rate, "Req Rate", "req/s", 5, None, False),  # magenta
+                    (self.time_series.ttft_ms, "TTFT", "ms", 3, None, False),  # red
                 ]
 
                 col = 0
                 graphs_drawn = 0
-                for data, label, unit, color, fixed_max in graphs:
+                for data, label, unit, color, fixed_max, requires_kvcache in graphs:
                     if row + graph_height + 2 >= height - 1:
                         break
 
-                    _ = _draw_ascii_graph(
-                        stdscr,
-                        row,
-                        col,
-                        graph_width,
-                        graph_height,
-                        data,
-                        label,
-                        unit,
-                        color,
-                        use_colors,
-                        fixed_max=fixed_max,
-                    )
+                    # Show N/A for KVCache graph when KVcached is not enabled
+                    if requires_kvcache and not self.time_series.kvcache_available:
+                        _draw_na_graph(stdscr, row, col, graph_width, graph_height, label, unit)
+                    else:
+                        _ = _draw_ascii_graph(
+                            stdscr,
+                            row,
+                            col,
+                            graph_width,
+                            graph_height,
+                            data,
+                            label,
+                            unit,
+                            color,
+                            use_colors,
+                            fixed_max=fixed_max,
+                        )
 
                     graphs_drawn += 1
                     if graphs_per_row == 2 and graphs_drawn % 2 == 1:
