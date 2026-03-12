@@ -15,6 +15,9 @@ using offset_t = page_id_t;
 
 // Page size is now configurable via kvcached initialization
 extern size_t kPageSize;
+// GPU allocation granularity (queried at runtime via
+// gpuMemGetAllocationGranularity)
+extern size_t kGPUAllocGranularity;
 static constexpr size_t kStartAddr = 0x1f0'000'000'000;
 
 static constexpr page_id_t INV_PAGE_ID = -1;

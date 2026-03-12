@@ -1,46 +1,44 @@
 // SPDX-FileCopyrightText: Copyright contributors to the kvcached project
 // SPDX-License-Identifier: Apache-2.0
 
-#include <cuda_runtime.h>
-
-#include "constants.hpp"
-#include "cuda_utils.hpp"
 #include "page.hpp"
+#include "constants.hpp"
+#include "gpu_utils.hpp"
 
 namespace kvcached {
 
 GPUPage::GPUPage(page_id_t page_id, int dev_idx, size_t page_size)
     : page_id_(page_id), dev_(dev_idx),
       page_size_(page_size > 0 ? page_size : kPageSize), handle_(0) {
-  // CHECK_DRV(cuCtxGetDevice(&dev_));
+  // CHECK_DRV(gpuCtxGetDevice(&dev_));
 
-  CUmemAllocationProp prop = {
-      .type = CU_MEM_ALLOCATION_TYPE_PINNED,
+  gpu_mem_alloc_prop_t prop = {
+      .type = GPU_MEM_ALLOCATION_TYPE_PINNED,
       .location =
           {
-              .type = CU_MEM_LOCATION_TYPE_DEVICE,
+              .type = GPU_MEM_LOCATION_TYPE_DEVICE,
               .id = dev_,
           },
   };
-  CHECK_DRV(cuMemCreate(&handle_, page_size_, &prop, 0));
+  CHECK_DRV(gpuMemCreate(&handle_, page_size_, &prop, 0));
 }
 
-GPUPage::~GPUPage() { CHECK_DRV(cuMemRelease(handle_)); }
+GPUPage::~GPUPage() { CHECK_DRV(gpuMemRelease(handle_)); }
 
 bool GPUPage::map(generic_ptr_t vaddr, bool set_access) {
-  CUmemAccessDesc accessDesc_{
+  gpu_mem_access_desc_t accessDesc_{
       .location =
           {
-              .type = CU_MEM_LOCATION_TYPE_DEVICE,
+              .type = GPU_MEM_LOCATION_TYPE_DEVICE,
               .id = dev_,
           },
-      .flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE,
+      .flags = GPU_MEM_ACCESS_FLAGS_PROT_READWRITE,
   };
-  CHECK_DRV(cuMemMap(reinterpret_cast<CUdeviceptr>(vaddr), page_size_, 0,
-                     handle_, 0));
+  CHECK_DRV(gpuMemMap(reinterpret_cast<gpu_devptr_t>(vaddr), page_size_, 0,
+                      handle_, 0));
   if (set_access)
-    CHECK_DRV(cuMemSetAccess(reinterpret_cast<CUdeviceptr>(vaddr), page_size_,
-                             &accessDesc_, 1));
+    CHECK_DRV(gpuMemSetAccess(reinterpret_cast<gpu_devptr_t>(vaddr), page_size_,
+                              &accessDesc_, 1));
   return true;
 }
 

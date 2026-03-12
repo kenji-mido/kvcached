@@ -8,14 +8,16 @@
 
 #include "allocator.hpp"
 #include "constants.hpp"
-#include "cuda_utils.hpp"
 #include "ftensor.hpp"
+#include "gpu_utils.hpp"
 #include "page.hpp"
 #include "torch_utils.hpp"
 
 namespace kvcached {
 // Global configurable page size
 size_t kPageSize = 2 * 1024 * 1024; // Default 2MB
+// GPU allocation granularity (set at runtime by init_gpu_)
+size_t kGPUAllocGranularity = 2 * 1024 * 1024; // Default 2MB
 
 std::unique_ptr<FTensorAllocator> FTensorAllocator::g_allocator_;
 std::mutex FTensorAllocator::g_allocator_mutex_;
@@ -45,7 +47,7 @@ FTensorAllocator::FTensorAllocator(const torch::Device &device,
     : dev_(device), num_layers_(0), contiguous_layout_(contiguous_layout),
       kv_tensor_size_per_layer_(0) {
   if (dev_.is_cuda()) {
-    init_cuda_();
+    init_gpu_();
   }
 }
 
@@ -277,35 +279,40 @@ void FTensorAllocator::free_ftensor_(torch::Tensor &ftensor) {
   ftensors_.erase(name);
 }
 
-void FTensorAllocator::init_cuda_() {
-  CHECK_RT(cudaFree(0));
+void FTensorAllocator::init_gpu_() {
+  CHECK_RT(gpuFree(0));
 
-  CUdevice dev;
-  CHECK_DRV(cuCtxGetDevice(&dev));
+  gpu_device_t dev;
+  CHECK_DRV(gpuCtxGetDevice(&dev));
 
+#ifndef USE_ROCM
+  // ROCm bug: hipDeviceAttributeVMMSupported returns 0 even when VMM is
+  // supported. Skip this check on ROCm.
   int supportsVMM = 0;
   CHECK_DRV(cuDeviceGetAttribute(
       &supportsVMM, CU_DEVICE_ATTRIBUTE_VIRTUAL_ADDRESS_MANAGEMENT_SUPPORTED,
       dev));
   // LOGE("Supports VMM: %d", supportsVMM);
+#endif
 
-  CUcontext context;
-  CHECK_DRV(cuCtxGetCurrent(&context));
+  gpu_context_t context;
+  CHECK_DRV(gpuCtxGetCurrent(&context));
 
-  CUmemAllocationProp prop{
-      .type = CU_MEM_ALLOCATION_TYPE_PINNED,
+  gpu_mem_alloc_prop_t prop{
+      .type = GPU_MEM_ALLOCATION_TYPE_PINNED,
       .location =
           {
-              .type = CU_MEM_LOCATION_TYPE_DEVICE,
+              .type = GPU_MEM_LOCATION_TYPE_DEVICE,
               .id = dev,
           },
   };
 
   size_t chunk_sz = 0;
-  CHECK_DRV(cuMemGetAllocationGranularity(&chunk_sz, &prop,
-                                          CU_MEM_ALLOC_GRANULARITY_MINIMUM));
+  CHECK_DRV(gpuMemGetAllocationGranularity(&chunk_sz, &prop,
+                                           GPU_MEM_ALLOC_GRANULARITY_MINIMUM));
+  kGPUAllocGranularity = chunk_sz;
   ASSERT(kPageSize % chunk_sz == 0,
-         "Invalid page size: %lu must be a multiple of CUDA granularity %lu\n",
+         "Invalid page size: %lu must be a multiple of GPU granularity %lu\n",
          kPageSize, chunk_sz);
 }
 

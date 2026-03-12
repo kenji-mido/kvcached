@@ -5,8 +5,8 @@
 #include <sys/mman.h>
 
 #include "constants.hpp"
-#include "cuda_utils.hpp"
 #include "ftensor.hpp"
+#include "gpu_utils.hpp"
 #include "page.hpp"
 
 namespace kvcached {
@@ -15,15 +15,15 @@ static std::atomic<size_t> g_vaddr_allocated_offset = 0;
 
 static inline generic_ptr_t alloc_virtual_mem(const torch::Device &dev,
                                               size_t size) {
-  size_t alignment_2mb = 2 * 1024 * 1024;
-  ASSERT(size % alignment_2mb == 0,
+  size_t alignment = kGPUAllocGranularity;
+  ASSERT(size % alignment == 0,
          "alloc size not aligned."); // Ensure alignment.
 
   generic_ptr_t vaddr;
   size_t offset = g_vaddr_allocated_offset.fetch_add(size);
   if (dev.is_cuda()) {
-    CHECK_DRV(cuMemAddressReserve(reinterpret_cast<CUdeviceptr *>(&vaddr), size,
-                                  alignment_2mb, kStartAddr + offset, 0ULL));
+    CHECK_DRV(gpuMemAddressReserve(reinterpret_cast<gpu_devptr_t *>(&vaddr),
+                                   size, alignment, kStartAddr + offset, 0ULL));
   } else {
     vaddr = mmap(reinterpret_cast<void *>(kStartAddr + offset), size,
                  PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -65,8 +65,8 @@ FTensor::~FTensor() {
   mapping_.clear(); // Free all physical pages directly.
   zero_page_.reset();
   if (vaddr_) {
-    CHECK_DRV(cuMemUnmap(reinterpret_cast<CUdeviceptr>(vaddr_), size_));
-    CHECK_DRV(cuMemAddressFree(reinterpret_cast<CUdeviceptr>(vaddr_), size_));
+    CHECK_DRV(gpuMemUnmap(reinterpret_cast<gpu_devptr_t>(vaddr_), size_));
+    CHECK_DRV(gpuMemAddressFree(reinterpret_cast<gpu_devptr_t>(vaddr_), size_));
   }
 }
 
@@ -81,7 +81,7 @@ bool FTensor::map(offset_t offset) {
 
   auto vaddr = reinterpret_cast<generic_ptr_t>(
       reinterpret_cast<uintptr_t>(vaddr_) + offset);
-  CHECK_DRV(cuMemUnmap(reinterpret_cast<CUdeviceptr>(vaddr), page_size_));
+  CHECK_DRV(gpuMemUnmap(reinterpret_cast<gpu_devptr_t>(vaddr), page_size_));
 
   mapping_[page_id] = make_unique_page(dev_, page_id, page_size_);
   mapping_[page_id]->map(vaddr);
@@ -99,7 +99,7 @@ bool FTensor::unmap(offset_t offset) {
 
   auto vaddr = reinterpret_cast<generic_ptr_t>(
       reinterpret_cast<uintptr_t>(vaddr_) + offset);
-  CHECK_DRV(cuMemUnmap(reinterpret_cast<CUdeviceptr>(vaddr), page_size_));
+  CHECK_DRV(gpuMemUnmap(reinterpret_cast<gpu_devptr_t>(vaddr), page_size_));
 
   // Map the zero page instead to ensure memory integrity.
   map_(zero_page_.get(), offset);
@@ -117,16 +117,16 @@ bool FTensor::map_(Page *page, offset_t offset, bool set_access) {
 }
 
 bool FTensor::set_access_(generic_ptr_t addr, size_t size) {
-  CUmemAccessDesc accessDesc_{
+  gpu_mem_access_desc_t accessDesc_{
       .location =
           {
-              .type = CU_MEM_LOCATION_TYPE_DEVICE,
+              .type = GPU_MEM_LOCATION_TYPE_DEVICE,
               .id = dev_.index(),
           },
-      .flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE,
+      .flags = GPU_MEM_ACCESS_FLAGS_PROT_READWRITE,
   };
-  CHECK_DRV(cuMemSetAccess(reinterpret_cast<CUdeviceptr>(addr), size,
-                           &accessDesc_, 1));
+  CHECK_DRV(gpuMemSetAccess(reinterpret_cast<gpu_devptr_t>(addr), size,
+                            &accessDesc_, 1));
   return true;
 }
 

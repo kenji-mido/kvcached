@@ -86,14 +86,25 @@ def _obtain_default_ipc_name() -> str:
     return f"{name}_{os.getpid()}"
 
 
+def _is_rocm() -> bool:
+    """Check if running on ROCm/HIP backend."""
+    try:
+        import torch
+        return torch.version.hip is not None
+    except (ImportError, AttributeError):
+        return False
+
+
 def _get_page_size() -> int:
     """Get PAGE_SIZE from environment variable with validation.
 
     Returns:
-        PAGE_SIZE in bytes, must be a multiple of 2MB (2097152 bytes)
+        PAGE_SIZE in bytes. On CUDA, must be a multiple of 2MB (2097152 bytes).
+        On ROCm, the C++ layer validates against the actual GPU granularity,
+        so we only require the value to be a positive multiple of 1MB.
 
     Raises:
-        ValueError: If PAGE_SIZE is not a multiple of 2MB
+        ValueError: If PAGE_SIZE is invalid
     """
     default_page_size = 2 * 1024 * 1024  # 2MB
     page_size_mb_str = os.getenv("KVCACHED_PAGE_SIZE_MB")
@@ -108,12 +119,26 @@ def _get_page_size() -> int:
             f"Invalid KVCACHED_PAGE_SIZE_MB: {page_size_mb_str}. Must be an integer."
         )
 
-    # Validate that PAGE_SIZE is a multiple of 2MB
-    base_size = 2 * 1024 * 1024  # 2MB
-    if page_size <= 0 or page_size % base_size != 0:
+    if page_size <= 0:
         raise ValueError(
-            f"PAGE_SIZE must be a positive multiple of 2MB (2097152 bytes), "
-            f"got: {page_size}")
+            f"PAGE_SIZE must be positive, got: {page_size}")
+
+    if _is_rocm():
+        # On ROCm, the C++ layer dynamically validates against the GPU's
+        # actual allocation granularity (which may differ from 2MB).
+        # Only require a basic sanity check here.
+        base_size = 1024 * 1024  # 1MB
+        if page_size % base_size != 0:
+            raise ValueError(
+                f"PAGE_SIZE must be a positive multiple of 1MB, "
+                f"got: {page_size}")
+    else:
+        # On CUDA, require 2MB alignment
+        base_size = 2 * 1024 * 1024  # 2MB
+        if page_size % base_size != 0:
+            raise ValueError(
+                f"PAGE_SIZE must be a positive multiple of 2MB (2097152 bytes), "
+                f"got: {page_size}")
 
     return page_size
 

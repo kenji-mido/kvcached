@@ -16,12 +16,15 @@ try:
     import torch
     from torch.utils.cpp_extension import (
         BuildExtension,
+        CppExtension,
         CUDAExtension,
         include_paths,
         library_paths,
     )
 except ImportError:
     raise ImportError("Torch not found, please install torch>=2.6.0 first.")
+
+IS_ROCM = torch.version.hip is not None
 
 SCRIPT_PATH = os.path.dirname(os.path.realpath(__file__))
 ROOT_PATH = SCRIPT_PATH
@@ -47,17 +50,28 @@ def get_extensions():
         "-std=c++17", f"-D_GLIBCXX_USE_CXX11_ABI={int(cxx_abi)}"
     ]
 
-    vmm_ops_module = CUDAExtension(
-        "kvcached.vmm_ops",
-        csrc_files,
-        include_dirs=include_paths() + [os.path.join(CSRC_PATH, "inc")],
-        library_dirs=library_paths(),
-        libraries=["torch", "torch_cpu", "torch_python", "cuda"],
-        extra_compile_args={
-            "cxx": extra_compile_args,
-            "nvcc": extra_compile_args
-        },
-    )
+    if IS_ROCM:
+        extra_compile_args.append("-DUSE_ROCM")
+        vmm_ops_module = CppExtension(
+            "kvcached.vmm_ops",
+            csrc_files,
+            include_dirs=include_paths() + [os.path.join(CSRC_PATH, "inc")],
+            library_dirs=library_paths(),
+            libraries=["torch", "torch_cpu", "torch_python", "amdhip64"],
+            extra_compile_args=extra_compile_args,
+        )
+    else:
+        vmm_ops_module = CUDAExtension(
+            "kvcached.vmm_ops",
+            csrc_files,
+            include_dirs=include_paths() + [os.path.join(CSRC_PATH, "inc")],
+            library_dirs=library_paths(),
+            libraries=["torch", "torch_cpu", "torch_python", "cuda"],
+            extra_compile_args={
+                "cxx": extra_compile_args,
+                "nvcc": extra_compile_args
+            },
+        )
     return [vmm_ops_module], {"build_ext": BuildExtension}
 
 

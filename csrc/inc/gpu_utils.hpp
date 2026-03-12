@@ -3,8 +3,7 @@
 
 #pragma once
 
-#include <cuda.h>
-#include <cuda_runtime.h>
+#include "gpu_compat.hpp"
 
 #include <cassert>
 #include <iostream>
@@ -36,46 +35,44 @@
 
 #define DRV_CALL(call)                                                         \
   {                                                                            \
-    CUresult result = (call);                                                  \
-    if (CUDA_SUCCESS != result) {                                              \
-      const char *errMsg;                                                      \
-      cuGetErrorString(result, &errMsg);                                       \
-      ASSERT(0, "Error when exec " #call " %s-%d code:%d err:%s",              \
-             __FUNCTION__, __LINE__, result, errMsg);                          \
+    gpu_result_t result = (call);                                              \
+    if (GPU_SUCCESS != result) {                                               \
+      const char *errMsg = gpu_get_drv_error_string(result);                   \
+      ASSERT(0, "Error when exec " #call " %s-%d code:%d err:%s",             \
+             __FUNCTION__, __LINE__, (int)result, errMsg);                     \
     }                                                                          \
   }
 
 #define DRV_CALL_RET(call, status_val)                                         \
   {                                                                            \
-    CUresult result = (call);                                                  \
-    if (CUDA_SUCCESS != result) {                                              \
-      const char *errMsg;                                                      \
-      cuGetErrorString(result, &errMsg);                                       \
-      WARN(0, "Error when exec " #call " %s-%d code:%d err:%s", __FUNCTION__,  \
-           __LINE__, result, errMsg);                                          \
+    gpu_result_t result = (call);                                              \
+    if (GPU_SUCCESS != result) {                                               \
+      const char *errMsg = gpu_get_drv_error_string(result);                   \
+      WARN(0, "Error when exec " #call " %s-%d code:%d err:%s", __FUNCTION__, \
+           __LINE__, (int)result, errMsg);                                     \
     }                                                                          \
     status_val = result;                                                       \
   }
 
-static inline void checkRtError(cudaError_t res, const char *tok,
+static inline void checkRtError(gpu_rt_error_t res, const char *tok,
                                 const char *file, unsigned line) {
-  if (res != cudaSuccess) {
+  if (res != GPU_RT_SUCCESS) {
     std::cerr << file << ':' << line << ' ' << tok
-              << " failed in CUDA runtime (" << (unsigned)res
-              << "): " << cudaGetErrorString(res) << std::endl;
+              << " failed in GPU runtime (" << (unsigned)res
+              << "): " << gpu_get_rt_error_string(res) << std::endl;
     abort();
   }
 }
 
 #define CHECK_RT(x) checkRtError(x, #x, __FILE__, __LINE__)
 
-static inline void checkDrvError(CUresult res, const char *tok,
+static inline void checkDrvError(gpu_result_t res, const char *tok,
                                  const char *file, unsigned line) {
-  if (res != CUDA_SUCCESS) {
-    const char *errStr = nullptr;
-    (void)cuGetErrorString(res, &errStr);
-    std::cerr << file << ':' << line << ' ' << tok << " failed in CUDA driver ("
-              << (unsigned)res << "): " << errStr << std::endl;
+  if (res != GPU_SUCCESS) {
+    const char *errStr = gpu_get_drv_error_string(res);
+    std::cerr << file << ':' << line << ' ' << tok
+              << " failed in GPU driver (" << (unsigned)res << "): " << errStr
+              << std::endl;
     abort();
   }
 }

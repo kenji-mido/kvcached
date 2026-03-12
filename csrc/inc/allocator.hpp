@@ -10,7 +10,6 @@
 #include <unordered_map>
 #include <vector>
 
-#include <cuda_runtime.h>
 #include <torch/extension.h>
 
 #include "constants.hpp"
@@ -56,8 +55,8 @@ private:
                                 std::string name = "");
   void free_ftensor_(torch::Tensor &ftensor);
 
-  // CUDA util functions.
-  void init_cuda_();
+  // GPU util functions.
+  void init_gpu_();
 
   static std::unique_ptr<FTensorAllocator> g_allocator_;
   static std::mutex g_allocator_mutex_;
