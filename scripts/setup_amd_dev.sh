@@ -156,7 +156,28 @@ docker run --rm \
     | grep -v "^\[aiter\]\|^INFO:aiter\|^\[Gloo\]\|^Loading pt\|^Capturing\|clang.*option\|^failed to\|type hints\|compile_template\|start build\|finish build\|import \["
 SGLANG_BASELINE=$?
 
-# ── 9. Summary ────────────────────────────────────────────────────────────
+# ── 9. Environment config ─────────────────────────────────────────────────
+log "Creating environment setup file..."
+cat > ~/setup_env.sh << 'ENVEOF'
+#!/bin/bash
+# Load environment with: source ~/setup_env.sh
+export PATH="$HOME/.local/bin:$HOME/.claude/bin:/opt/rocm/bin:$PATH"
+export ROCM_HOME=/opt/rocm
+
+echo "Environment loaded:"
+echo "  ROCm:   $(cat /opt/rocm/.info/version 2>/dev/null || echo 'N/A')"
+echo "  Docker: $(docker --version 2>/dev/null || echo 'N/A')"
+echo "  GPU:    $(rocm-smi --showproductname 2>/dev/null | grep 'Card Series' | head -1 | sed 's/.*: //' || echo 'N/A')"
+echo "  gh:     $(gh --version 2>/dev/null | head -1 || echo 'N/A')"
+echo "  claude: $(claude --version 2>/dev/null || echo 'N/A')"
+ENVEOF
+chmod +x ~/setup_env.sh
+
+if ! grep -q "setup_env.sh" ~/.bashrc 2>/dev/null; then
+    echo '[ -f ~/setup_env.sh ] && source ~/setup_env.sh' >> ~/.bashrc
+fi
+
+# ── 10. Summary ───────────────────────────────────────────────────────────
 log "Summary"
 
 echo ""
@@ -194,6 +215,19 @@ echo "  docker run --rm \\"
 echo "    $DOCKER_GPU_ARGS -v $WORK_DIR:/kvcached \\"
 echo "    $SGLANG_IMAGE \\"
 echo "    bash -c 'cd /kvcached && pip install -e . --no-build-isolation && python tests/test_sglang_e2e.py --baseline'"
+echo ""
+
+echo ""
+echo "  Next steps:"
+echo ""
+echo "  1. Load environment (auto-loaded on next login):"
+echo "     source ~/setup_env.sh"
+echo ""
+echo "  2. Authenticate GitHub (for pushes):"
+echo "     gh auth login"
+echo ""
+echo "  3. Use Claude Code for development:"
+echo "     cd $WORK_DIR && claude"
 echo ""
 
 if [ $VLLM_ELASTIC -eq 0 ] && [ $VLLM_BASELINE -eq 0 ] && [ $SGLANG_ELASTIC -eq 0 ] && [ $SGLANG_BASELINE -eq 0 ]; then
