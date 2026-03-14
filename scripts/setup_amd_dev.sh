@@ -70,11 +70,15 @@ fi
 
 # ── 1.6. Claude Code ────────────────────────────────────────────────────
 log "Installing Claude Code..."
+export PATH="$HOME/.local/bin:$HOME/.claude/bin:$PATH"
 if ! command -v claude &> /dev/null; then
     curl -fsSL https://claude.ai/install.sh | bash \
         || echo "  WARNING: Claude Code install failed. Install manually."
+fi
+if command -v claude &> /dev/null; then
+    echo "  Claude Code: $(claude --version 2>/dev/null || echo 'installed')"
 else
-    echo "  Claude Code already installed."
+    echo "  WARNING: claude not found in PATH after install."
 fi
 
 # ── 2. Clone kvcached ────────────────────────────────────────────────────
