@@ -21,6 +21,7 @@ if not BASELINE:
     os.environ["KVCACHED_AUTOPATCH"] = "1"
     os.environ["KVCACHED_MAX_RESERVED_PAGES"] = "2"
     os.environ["KVCACHED_MIN_RESERVED_PAGES"] = "1"
+    import kvcached.integration.sglang.autopatch  # noqa: F401, E402
 
 from sglang import Engine  # noqa: E402
 

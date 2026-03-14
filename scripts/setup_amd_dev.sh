@@ -53,6 +53,30 @@ if command -v rocm-smi &> /dev/null; then
     rocm-smi --showproductname 2>/dev/null | grep "Card Series" | head -1 | sed 's/^/  /'
 fi
 
+# ── 1.5. GitHub CLI ─────────────────────────────────────────────────────
+log "Installing GitHub CLI..."
+if ! command -v gh &> /dev/null; then
+    (type -p wget >/dev/null || (apt-get update -qq && apt-get install -y -qq wget)) && \
+    mkdir -p -m 755 /etc/apt/keyrings && \
+    out=$(mktemp) && wget -qO "$out" https://cli.github.com/packages/githubcli-archive-keyring.gpg && \
+    cat "$out" | tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null && \
+    chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null && \
+    apt-get update -qq 2>&1 | grep -v "^W:" || true && \
+    apt-get install -y -qq gh 2>&1 || echo "  WARNING: gh install failed"
+else
+    echo "  gh already installed: $(gh --version | head -1)"
+fi
+
+# ── 1.6. Claude Code ────────────────────────────────────────────────────
+log "Installing Claude Code..."
+if ! command -v claude &> /dev/null; then
+    curl -fsSL https://claude.ai/install.sh | bash \
+        || echo "  WARNING: Claude Code install failed. Install manually."
+else
+    echo "  Claude Code already installed."
+fi
+
 # ── 2. Clone kvcached ────────────────────────────────────────────────────
 if [ "${1:-}" != "--test" ]; then
     log "Cloning kvcached..."
