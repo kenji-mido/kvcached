@@ -176,6 +176,12 @@ benchmarks/bench_latency_benefit/results/
 benchmarks/bench_latency_benefit/plot*
 benchmarks/gsm8k/*.jsonl
 benchmarks/gsm8k/*.txt
+benchmarks/benchmark_results*/
+benchmarks/multi_model_results/
+benchmarks/ondemand_test/
+benchmarks/results/
+benchmarks/test_results*/
+benchmarks/test_fix/
 
 # tools
 tools/addlicense
