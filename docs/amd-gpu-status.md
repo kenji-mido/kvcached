@@ -2,7 +2,9 @@
 
 Last updated: 2026-03-14
 
-## Current Status: Code Complete, Awaiting AMD GPU Validation
+## Current Status: Validated on AMD Instinct MI300X (ROCm 7.1)
+
+All HIP VMM APIs verified on real hardware. vLLM integration tested end-to-end.
 
 ## Completed
 
@@ -10,76 +12,113 @@ Last updated: 2026-03-14
 - [x] `gpu_utils.hpp` — GPU-agnostic error handling (replaces `cuda_utils.hpp`)
 - [x] `constants.hpp` — `kGPUAllocGranularity` for dynamic alignment
 - [x] `page.hpp` / `page.cpp` — type/API migration to `gpu_*` aliases
-- [x] `ftensor.cpp` — type/API migration, dynamic alignment
-- [x] `allocator.cpp` — `init_gpu_()`, VMM check skip on ROCm, dynamic granularity
+- [x] `ftensor.cpp` — type/API migration, dynamic alignment, `hipMemAddressReserve` type cast fix
+- [x] `allocator.cpp` — `init_gpu_()`, VMM check skip on ROCm, dynamic granularity, contiguous layout size fix
 - [x] `allocator.hpp` — `init_cuda_()` → `init_gpu_()` rename
-- [x] `setup.py` — ROCm detection, `CppExtension` + `-DUSE_ROCM` + `amdhip64`
+- [x] `setup.py` — ROCm detection, `CppExtension` + `-DUSE_ROCM` + `amdhip64`, ROCm include/lib paths
 - [x] `kvcached/utils.py` — page size validation relaxed on ROCm
 - [x] CUDA regression — build passes, pre-commit passes, CPU tests pass
 - [x] Test infrastructure — `conftest.py` markers, `test_gpu_compat.py`, `test_rocm_vmm.py`
-- [x] Documentation — `docs/amd-gpu-testing-guide.md`
-- [x] Scripts — `scripts/setup_amd_dev.sh`, `scripts/setup_rocm_env.sh`, `scripts/run_amd_tests.sh`
+- [x] E2E elastic memory benchmark — `tests/test_elastic_memory_e2e.py` (kvcached vs baseline)
+- [x] Documentation — `docs/amd-gpu-testing-guide.md`, `docs/amd-gpu-status.md`
+- [x] Scripts — `setup_amd_dev.sh` (full environment: kvcached + vLLM ROCm source build)
 
-## Next: AMD GPU Validation (MI300X)
+## Validated on Hardware
 
-### Phase 1: Build & Smoke (estimated: 30 min)
+### Build & Unit Tests
 
-1. Transfer `setup_amd_dev.sh` to MI300X machine and run it
-2. Verify `-DUSE_ROCM` build succeeds (links against `amdhip64`)
-3. Run `bash scripts/run_amd_tests.sh --quick` (CPU-only tiers)
-4. Run `bash scripts/run_amd_tests.sh --gpu` (GPU tiers)
+| Test | Result |
+|------|--------|
+| C++ extension build (`-DUSE_ROCM`, links `libamdhip64.so.7`) | PASS |
+| CPU-only tests (8 tests) | PASS |
+| GPU compat tests (5 tests) | PASS |
+| ROCm VMM smoke tests (3 tests: init, granularity, alloc/map/unmap) | PASS |
 
-### Phase 2: Core Functionality (estimated: 1-2 hours)
+### HIP VMM API Hardware Verification
 
-5. `test_rocm_vmm.py` — init/shutdown, granularity query, tensor alloc/free
-6. `test_paged_allocator_aliasing.py` — VMM mapping correctness
-7. `test_kvcache_manager.py` — alloc/free/resize/trim
+Each API verified by observing `hipMemGetInfo()` GPU memory changes on MI300X:
 
-### Phase 3: Integration (estimated: 2-4 hours)
+| HIP API | Operation | GPU Memory Delta | Status |
+|---------|-----------|-----------------|--------|
+| `hipMemGetAllocationGranularity` | Query allocation granularity | N/A | PASS |
+| `hipMemAddressReserve` | Reserve virtual address space | -152 MB | PASS |
+| `hipMemCreate` | Allocate physical GPU memory | (included in map) | PASS |
+| `hipMemMap` | Map physical → virtual (1 page) | -8 MB | PASS |
+| `hipMemSetAccess` | Set read/write access | N/A | PASS |
+| GPU read/write | `tensor[0] = 42` on mapped memory | N/A | PASS |
+| `hipMemUnmap` | Unmap physical memory | +8 MB freed | PASS |
+| `hipMemRelease` | Release physical allocation | (included in unmap) | PASS |
+| `hipMemAddressFree` | Free virtual address | (at shutdown) | PASS |
 
-8. vLLM ROCm integration test:
-   ```bash
-   pip install vllm  # ROCm build
-   ENABLE_KVCACHED=true python -m vllm.entrypoints.openai.api_server \
-       --model Qwen/Qwen3-0.6B --no-enable-prefix-caching
-   curl http://localhost:8000/v1/completions -d '{"model":"Qwen/Qwen3-0.6B","prompt":"Hello"}'
-   ```
-9. SGLang ROCm integration test (if available)
-10. Multi-model controller test (`controller/`)
+Binary verification: `vmm_ops.so` links to `libamdhip64.so.7`, `libhsa-runtime64.so.1` — 11 HIP VMM symbols resolved.
 
-### Phase 4: Stress & Edge Cases
+### vLLM Integration (E2E)
 
-11. Granularity edge cases (4096B vs 2MB page sizes)
-12. Large model test (memory pressure)
-13. Multi-GPU test (if available)
+| Test | Result |
+|------|--------|
+| vLLM v0.17.1 source build for ROCm 7.1 | PASS |
+| ROCm platform detection (`amdsmi`) | PASS |
+| Autopatch (5/6 patches applied, v0.9+ path) | PASS |
+| Inference with `facebook/opt-125m` | PASS — correct text generated |
 
-## Known Risks
+### Elastic Memory Benchmark (`test_elastic_memory_e2e.py`)
 
-| Risk | Impact | Mitigation | Status |
-|------|--------|------------|--------|
-| `hipDeviceAttributeVMMSupported` = 0 | Init fails | `#ifndef USE_ROCM` skip | Done |
-| `hipGetErrorString` signature | Build error | Wrapper in `gpu_compat.hpp` | Done |
-| Granularity 4096B vs 2MB | Alignment error | Dynamic query + Python relaxation | Done |
-| `kStartAddr` VA validity on MI300X | Mapping fails | VA space likely sufficient | Untested |
-| `hipMemAllocationProp` layout | Struct mismatch | Designated initializers | Untested |
-| ROCm vLLM/SGLang compatibility | Patching fails | Need ROCm-specific patches? | Unknown |
+Verified with `MAX_RESERVED_PAGES=2` to force `hipMemUnmap`:
+
+| Check | Result |
+|-------|--------|
+| Physical << Virtual at idle (0.05%) | PASS |
+| Physical grows on-demand during inference (48 → 864 MB) | PASS |
+| Physical shrinks after completion (864 → 96 MB, hipMemUnmap) | PASS |
+| GPU memory correlates with Physical changes | PASS |
+| Used pages cycle (alloc → free) | PASS |
+| Pages re-mapped on new requests | PASS |
+
+Baseline comparison (vanilla vLLM without kvcached):
+- vLLM allocates 98,498 MB upfront (50.2% of 192 GB)
+- GPU memory stays flat during all phases — no elasticity
+
+## Known Issues (Resolved)
+
+| Issue | Root Cause | Fix |
+|-------|-----------|-----|
+| `hip/hip_runtime.h: No such file` | `setup.py` missing ROCm include path | Added `/opt/rocm/include` to `include_dirs` |
+| `hipMemAddressReserve` type mismatch | HIP takes `void*`, CUDA takes `CUdeviceptr` (integer) | Added `reinterpret_cast<gpu_devptr_t>()` |
+| `test_kv_tensor_alloc_free` segfault | `total_kv_size < compound_page_size` in contiguous layout | Round up `total_kv_size` to multiple of `compound_page_size` |
+| `hipDeviceAttributeVMMSupported` = 0 | ROCm bug | Skipped via `#ifndef USE_ROCM` |
+| SGLang `sgl-kernel` for ROCm 7.1 | Wheel not published (404) | SGLang integration deferred |
+
+## Next Steps
+
+### Ready for Upstream Contribution
+
+1. **PR to `kenji-mido/kvcached` main branch** — merge `feature/amd-gpu-support`
+2. **Upstream to original kvcached repo** — the 3 C++ fixes + setup.py change are minimal and safe
+
+### Remaining Work
+
+3. **SGLang integration** — blocked on `sgl-kernel` ROCm 7.1 wheel availability
+4. **Multi-GPU testing** — not yet tested with tensor parallelism on ROCm
+5. **Larger model testing** — validated with opt-125m; test with larger models under memory pressure
+6. **CI/CD** — add ROCm CI pipeline (requires AMD GPU runner)
+
+## Test Environment
+
+- GPU: AMD Instinct MI300X VF (192 GB, gfx942)
+- ROCm: 7.1.0
+- PyTorch: 2.10.0+rocm7.1
+- vLLM: 0.17.1+rocm710 (source build)
+- Python: 3.12.3
+- OS: Ubuntu 24.04 (Linux 6.8.0)
 
 ## Branch Info
 
 - Branch: `feature/amd-gpu-support`
 - Base: `main` (`bd0b8ed`)
 - Remote: `kenji-mido/kvcached`
-- Files changed: 16 (+679 / -97)
-
-## Test Environment Requirements
-
-- AMD Instinct GPU (MI300X recommended)
-- ROCm 6.3+ (7.1.0 recommended)
-- PyTorch ROCm build
-- Python 3.10+
 
 ## Timeline
 
 - KubeCon Japan 2026: 7/29-30
 - CFP deadline: 3/29
-- Target: validate on MI300X before CFP submission
+- Target: validated on MI300X before CFP submission ✅

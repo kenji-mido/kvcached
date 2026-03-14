@@ -23,7 +23,9 @@ static inline generic_ptr_t alloc_virtual_mem(const torch::Device &dev,
   size_t offset = g_vaddr_allocated_offset.fetch_add(size);
   if (dev.is_cuda()) {
     CHECK_DRV(gpuMemAddressReserve(reinterpret_cast<gpu_devptr_t *>(&vaddr),
-                                   size, alignment, kStartAddr + offset, 0ULL));
+                                   size, alignment,
+                                   reinterpret_cast<gpu_devptr_t>(kStartAddr + offset),
+                                   0ULL));
   } else {
     vaddr = mmap(reinterpret_cast<void *>(kStartAddr + offset), size,
                  PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);

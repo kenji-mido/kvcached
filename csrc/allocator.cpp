@@ -236,8 +236,14 @@ std::vector<torch::Tensor> FTensorAllocator::create_kv_tensors_contiguous_(
     size_t size, torch::Dtype dtype, const std::string &dev_str,
     int64_t num_layers, size_t compound_page_size) {
   // In contiguous layout, Python passes per-layer size, and we multiply by
-  // num_layers to get total size
+  // num_layers to get total size. Ensure total is at least one compound page
+  // and aligned to compound_page_size for correct VMM mapping.
   size_t total_kv_size = size * num_layers;
+  if (total_kv_size % compound_page_size != 0) {
+    total_kv_size =
+        ((total_kv_size + compound_page_size - 1) / compound_page_size) *
+        compound_page_size;
+  }
 
   // Create the single contiguous KV tensor (contains K and V for all layers)
   auto contiguous_name = std::string(kv_prefix) + "contiguous";

@@ -52,11 +52,12 @@ def get_extensions():
 
     if IS_ROCM:
         extra_compile_args.append("-DUSE_ROCM")
+        rocm_path = os.environ.get("ROCM_PATH", "/opt/rocm")
         vmm_ops_module = CppExtension(
             "kvcached.vmm_ops",
             csrc_files,
-            include_dirs=include_paths() + [os.path.join(CSRC_PATH, "inc")],
-            library_dirs=library_paths(),
+            include_dirs=include_paths() + [os.path.join(CSRC_PATH, "inc"), os.path.join(rocm_path, "include")],
+            library_dirs=library_paths() + [os.path.join(rocm_path, "lib")],
             libraries=["torch", "torch_cpu", "torch_python", "amdhip64"],
             extra_compile_args=extra_compile_args,
         )

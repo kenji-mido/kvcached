@@ -5,7 +5,7 @@
 # kvcached AMD GPU Development Environment Setup
 #
 # Self-contained script: scp to an AMD GPU machine, run, and get a fully
-# working dev environment with kvcached built for ROCm.
+# working dev environment with kvcached + vLLM built for ROCm.
 #
 # Usage:
 #   scp scripts/setup_amd_dev.sh user@<AMD-GPU-HOST>:~/
@@ -20,7 +20,7 @@
 #
 set -uo pipefail
 
-TOTAL_STEPS=8
+TOTAL_STEPS=10
 step=0
 log() { step=$((step+1)); echo ""; echo "[$step/$TOTAL_STEPS] $1"; echo "---"; }
 
@@ -28,24 +28,27 @@ REPO_URL="https://github.com/kenji-mido/kvcached.git"
 BRANCH="feature/amd-gpu-support"
 WORK_DIR="$HOME/kvcached"
 VENV_DIR="$HOME/venv"
+VLLM_DIR="$HOME/vllm-source"
+VLLM_VERSION="v0.17.1"
 
 echo "============================================"
 echo "  kvcached AMD GPU Dev Environment Setup"
 echo "============================================"
 echo "  Branch: $BRANCH"
 echo "  Work dir: $WORK_DIR"
+echo "  vLLM: $VLLM_VERSION (source build)"
 
 # --- 1. Base packages ---
 log "Installing base packages..."
 if command -v apt-get &> /dev/null; then
     sudo apt-get update -qq 2>&1 | grep -v "^W:" || true
-    sudo apt-get install -y -qq build-essential cmake curl git jq 2>&1 \
+    sudo apt-get install -y -qq build-essential cmake curl git jq ninja-build 2>&1 \
         || echo "  WARNING: some base packages failed to install"
     sudo apt-get install -y -qq python3-venv python3-dev 2>&1 \
         || sudo apt-get install -y -qq python3.10-venv python3.10-dev 2>&1 \
         || echo "  WARNING: python3-venv not installed"
 elif command -v dnf &> /dev/null; then
-    sudo dnf install -y gcc gcc-c++ cmake curl git jq python3-devel 2>&1 \
+    sudo dnf install -y gcc gcc-c++ cmake curl git jq ninja-build python3-devel 2>&1 \
         || echo "  WARNING: some base packages failed to install"
 else
     echo "  WARNING: unsupported package manager. Install build tools manually."
@@ -61,11 +64,13 @@ elif command -v rocminfo &> /dev/null; then
     ROCM_VERSION=$(rocminfo 2>/dev/null | grep -oP 'ROCm.*?(\d+\.\d+)' | head -1 | grep -oP '\d+\.\d+' || echo "")
     echo "  ROCm detected (version: ${ROCM_VERSION:-unknown})"
 else
-    echo "  WARNING: ROCm not found. GPU tests will not work."
+    echo "  ERROR: ROCm not found. Cannot continue."
     echo "  Install ROCm: https://rocm.docs.amd.com/en/latest/deploy/linux/installer/install.html"
+    exit 1
 fi
 
 ROCM_MAJOR=$(echo "$ROCM_VERSION" | cut -d. -f1)
+ROCM_MINOR=$(echo "$ROCM_VERSION" | cut -d. -f2)
 
 # GPU check
 if command -v rocm-smi &> /dev/null; then
@@ -115,20 +120,26 @@ source "$VENV_DIR/bin/activate"
 
 pip install --upgrade pip setuptools wheel -q
 
-# Check if PyTorch ROCm is already installed
-EXISTING_HIP=$(python3 -c "import torch; print(torch.version.hip)" 2>/dev/null || echo "none")
-if [ "$EXISTING_HIP" != "none" ] && [ "$EXISTING_HIP" != "None" ]; then
-    echo "  PyTorch ROCm already installed (HIP: $EXISTING_HIP)"
+# Determine PyTorch index URL based on ROCm version
+if [ "${ROCM_MAJOR:-6}" = "7" ]; then
+    TORCH_INDEX="https://download.pytorch.org/whl/rocm${ROCM_MAJOR}.${ROCM_MINOR}"
+    TORCH_VERSION="2.10.0"
+    echo "  ROCm ${ROCM_MAJOR}.${ROCM_MINOR}: Installing PyTorch ${TORCH_VERSION}..."
 else
-    if [ "${ROCM_MAJOR:-6}" = "7" ]; then
-        echo "  ROCm 7.x: Installing PyTorch nightly for rocm7.0..."
-        pip install -q --pre torch --index-url https://download.pytorch.org/whl/nightly/rocm7.0 2>&1 \
-            || echo "  WARNING: PyTorch nightly install failed"
-    else
-        echo "  ROCm 6.x: Installing PyTorch stable for rocm6.3..."
-        pip install -q torch --index-url https://download.pytorch.org/whl/rocm6.3 2>&1 \
-            || echo "  WARNING: PyTorch install failed"
-    fi
+    TORCH_INDEX="https://download.pytorch.org/whl/rocm6.3"
+    TORCH_VERSION="2.6.0"
+    echo "  ROCm 6.x: Installing PyTorch ${TORCH_VERSION}..."
+fi
+
+# Check if correct PyTorch ROCm is already installed
+EXISTING_TORCH=$(python3 -c "import torch; print(torch.__version__)" 2>/dev/null || echo "none")
+EXISTING_HIP=$(python3 -c "import torch; print(torch.version.hip)" 2>/dev/null || echo "none")
+if [[ "$EXISTING_TORCH" == "${TORCH_VERSION}+"* ]] && [ "$EXISTING_HIP" != "none" ] && [ "$EXISTING_HIP" != "None" ]; then
+    echo "  PyTorch ROCm already installed ($EXISTING_TORCH, HIP: $EXISTING_HIP)"
+else
+    pip install -q "torch==${TORCH_VERSION}" "torchvision" "torchaudio" \
+        --index-url "$TORCH_INDEX" 2>&1 \
+        || echo "  WARNING: PyTorch install failed"
 fi
 
 # Verify PyTorch
@@ -139,7 +150,7 @@ print(f'  PyTorch {torch.__version__} (HIP {torch.version.hip})')
 print(f'  GPU available: {torch.cuda.is_available()}')
 if torch.cuda.is_available():
     print(f'  Device: {torch.cuda.get_device_name(0)}')
-" || echo "  WARNING: PyTorch ROCm verification failed"
+" || { echo "  ERROR: PyTorch ROCm verification failed"; exit 1; }
 
 # --- 6. Clone & build kvcached ---
 log "Cloning and building kvcached..."
@@ -156,7 +167,7 @@ else
 fi
 
 # Install Python dependencies
-pip install -q numpy posix_ipc wrapt pytest pre-commit 2>&1
+pip install -q numpy posix_ipc wrapt pytest pre-commit setuptools-scm packaging 2>&1
 
 # Build kvcached with ROCm
 echo "  Building kvcached (this may take a few minutes)..."
@@ -164,15 +175,72 @@ pip install -e . --no-build-isolation --no-cache-dir 2>&1 | tail -5
 
 # Verify
 python3 -c "import kvcached.vmm_ops; print('  kvcached.vmm_ops loaded successfully')" \
-    || echo "  WARNING: kvcached build verification failed"
+    || { echo "  ERROR: kvcached build failed"; exit 1; }
 
-# --- 7. Environment config file ---
+# --- 7. Build vLLM from source for ROCm ---
+log "Building vLLM ${VLLM_VERSION} from source for ROCm..."
+
+# Install amdsmi (required for vLLM ROCm platform detection)
+pip install -q amdsmi 2>&1 || echo "  WARNING: amdsmi install failed"
+
+if [ -d "$VLLM_DIR" ]; then
+    echo "  $VLLM_DIR already exists, updating..."
+    cd "$VLLM_DIR"
+    git fetch origin tag "$VLLM_VERSION" --depth 1 2>&1 || true
+    git checkout "$VLLM_VERSION" 2>&1 || true
+else
+    git clone --depth 1 --branch "$VLLM_VERSION" https://github.com/vllm-project/vllm.git "$VLLM_DIR" 2>&1
+    cd "$VLLM_DIR"
+fi
+
+# Install vLLM common dependencies (without pulling CUDA torch)
+echo "  Installing vLLM dependencies..."
+pip install -q --no-deps pyyaml opencv-python-headless 2>&1
+pip install -q aiohttp openai pydantic 'transformers>=4.56.0' 'tokenizers>=0.21.1' \
+    'fastapi[standard]' msgspec pyzmq gguf 'mistral_common[image]' \
+    compressed-tensors depyf cloudpickle watchfiles python-json-logger \
+    pybase64 cbor2 ijson setproctitle openai-harmony mcp grpcio grpcio-reflection \
+    'opentelemetry-sdk>=1.27.0' 'opentelemetry-api>=1.27.0' 'opentelemetry-exporter-otlp>=1.27.0' \
+    'opentelemetry-semantic-conventions-ai>=0.4.1' kaldi-native-fbank \
+    'xgrammar==0.1.29' 'outlines_core==0.2.11' 'llguidance>=1.3.0,<1.4.0' \
+    'lm-format-enforcer==0.11.3' 'lark==1.2.2' 'diskcache==5.6.3' \
+    partial-json-parser filelock blake3 py-cpuinfo einops anthropic \
+    model-hosting-container-standards ninja ipython orjson 2>&1 | tail -3
+
+# Build vLLM for ROCm
+echo "  Building vLLM for ROCm (this will take several minutes)..."
+export VLLM_TARGET_DEVICE=rocm
+export ROCM_HOME=/opt/rocm
+export HIP_PATH=/opt/rocm
+export MAX_JOBS=4
+rm -rf build/ dist/ *.egg-info
+
+pip install -e . --no-build-isolation --no-deps 2>&1 | tail -5
+
+# Verify
+VLLM_INSTALLED=$(python3 -c "import vllm; print(vllm.__version__)" 2>/dev/null || echo "FAILED")
+if [ "$VLLM_INSTALLED" != "FAILED" ]; then
+    echo "  vLLM $VLLM_INSTALLED installed successfully"
+else
+    echo "  WARNING: vLLM build failed. Integration tests will not work."
+fi
+
+# Verify ROCm platform detection
+python3 -c "
+from vllm.platforms import current_platform
+assert current_platform.is_rocm(), 'vLLM did not detect ROCm!'
+print(f'  vLLM platform: {type(current_platform).__name__}')
+" 2>/dev/null || echo "  WARNING: vLLM ROCm platform detection failed"
+
+# --- 8. Environment config file ---
 log "Creating environment setup file..."
 cat > ~/setup_env.sh << ENVEOF
 #!/bin/bash
 # Load environment with: source ~/setup_env.sh
 export PATH="\$HOME/.local/bin:\$HOME/.claude/bin:/opt/rocm/bin:\$PATH"
 export ROCM_HOME=/opt/rocm
+export ENABLE_KVCACHED=true
+export KVCACHED_AUTOPATCH=1
 [ -f "$VENV_DIR/bin/activate" ] && source "$VENV_DIR/bin/activate"
 
 echo "Environment loaded:"
@@ -181,6 +249,7 @@ echo "  PyTorch:  \$(python3 -c 'import torch; print(f"{torch.__version__} (HIP 
 echo "  ROCm:     \$(cat /opt/rocm/.info/version 2>/dev/null || echo 'N/A')"
 echo "  GPU:      \$(python3 -c 'import torch; print(torch.cuda.get_device_name(0))' 2>/dev/null || echo 'N/A')"
 echo "  kvcached: $WORK_DIR"
+echo "  vLLM:     \$(python3 -c 'import vllm; print(vllm.__version__)' 2>/dev/null || echo 'N/A')"
 echo "  Branch:   \$(cd $WORK_DIR && git branch --show-current 2>/dev/null || echo 'N/A')"
 ENVEOF
 chmod +x ~/setup_env.sh
@@ -189,7 +258,7 @@ if ! grep -q "setup_env.sh" ~/.bashrc 2>/dev/null; then
     echo '[ -f ~/setup_env.sh ] && source ~/setup_env.sh' >> ~/.bashrc
 fi
 
-# --- 8. Smoke tests ---
+# --- 9. Smoke tests ---
 log "Running smoke tests..."
 cd "$WORK_DIR"
 
@@ -203,6 +272,16 @@ python3 -m pytest tests/test_gpu_compat.py -v --tb=short 2>&1 | tail -8
 echo ""
 echo "  ROCm VMM smoke tests:"
 python3 -m pytest tests/test_rocm_vmm.py -v --tb=short 2>&1 | tail -8
+
+# --- 10. vLLM + kvcached elastic memory E2E test ---
+log "Running vLLM + kvcached elastic memory E2E test..."
+echo "  This verifies hipMemMap/hipMemUnmap elastic behavior end-to-end."
+echo "  (Loads facebook/opt-125m, runs inference, observes physical memory changes)"
+echo ""
+cd "$WORK_DIR"
+ENABLE_KVCACHED=true KVCACHED_AUTOPATCH=1 \
+    timeout 300 python3 tests/test_elastic_memory_e2e.py 2>&1 \
+    | grep -v "^(EngineCore\|^INFO\|^WARNING\|^Processed\|^Rendering\|^\[kvcached\]\|triton_kernels\|/root/vllm\|SyntaxWarning\|resource_tracker"
 
 echo ""
 echo "============================================"
@@ -221,11 +300,15 @@ echo "  3. Run full test suite:"
 echo "     cd $WORK_DIR"
 echo "     pytest tests/ -v -k 'not requires_cuda'"
 echo ""
-echo "  4. vLLM integration test:"
-echo "     ENABLE_KVCACHED=true python -m vllm.entrypoints.openai.api_server \\"
-echo "       --model <model> --no-enable-prefix-caching"
+echo "  4. Elastic memory benchmark:"
+echo "     cd $WORK_DIR"
+echo "     python tests/test_elastic_memory_e2e.py"
 echo ""
-echo "  5. Use Claude Code for further development:"
+echo "  5. vLLM integration (with kvcached autopatch):"
+echo "     ENABLE_KVCACHED=true KVCACHED_AUTOPATCH=1 python -m vllm.entrypoints.openai.api_server \\"
+echo "       --model <model> --no-enable-prefix-caching --enforce-eager"
+echo ""
+echo "  6. Use Claude Code for further development:"
 echo "     cd $WORK_DIR && claude"
 echo ""
 echo "  See docs/amd-gpu-testing-guide.md for full details."
