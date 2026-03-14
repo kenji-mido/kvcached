@@ -60,24 +60,35 @@ pip install -e . --no-build-isolation --no-cache-dir
 # Should complete without errors. Verify the extension links against amdhip64.
 ```
 
-### 2. Unit tests (no GPU needed — already verified on CUDA)
+### 2. Unit tests (no GPU needed)
 
 ```bash
 pytest tests/test_gpu_compat.py tests/test_shm_info_tracker.py -v
 ```
 
-### 3. ROCm VMM smoke tests (requires AMD GPU)
+`test_gpu_compat.py` の内容:
+
+- `test_rocm_detection_sets_is_rocm_true/false` — `torch.version.hip` による ROCm 検出ロジック
+- `test_page_size_default` — デフォルト 2MB
+- `test_page_size_validation_cuda_valid` — CUDA: 2MB, 4MB を受理
+- `test_page_size_validation_rocm_valid` — ROCm: 1MB, 2MB を受理
+- `test_page_size_cuda_rejects_1mb/3mb` — CUDA: 2MB 非倍数を拒否
+- `test_page_size_rejects_zero/negative/non_integer` — 異常値を拒否
+
+### 3. ROCm VMM テスト (AMD GPU 必須)
 
 ```bash
 pytest tests/test_rocm_vmm.py -v
 ```
 
-This runs:
-- `test_init_kvcached_rocm` — init/shutdown cycle
-- `test_granularity_query` — verifies granularity query succeeds
-- `test_kv_tensor_alloc_free` — create → map → unmap → shutdown
+kvcached のコア VMM 動作を検証するテスト:
 
-### 4. Full existing test suite on ROCm
+- `test_init_kvcached_rocm` — init/shutdown。init 直後に `kv_tensors_created() == False` をアサート
+- `test_granularity_query` — `hipMemGetAllocationGranularity` で granularity 取得が成功すること
+- `test_kv_tensor_create` — `create_kv_tensors` がGPU テンソル (`is_cuda`, 正しい dtype, `numel > 0`) を返すこと
+- `test_kv_tensor_map_unmap` — map 後にGPU メモリへ書き込み→読み出しで値が一致すること。マッピング失敗時はセグフォルトまたは値不一致で FAIL
+
+### 4. Full test suite on ROCm
 
 ```bash
 pytest tests/ -v -k "not requires_cuda"
@@ -131,6 +142,27 @@ docker run --rm --entrypoint bash \
     -c 'cd /kvcached && pip install -e . --no-build-isolation -q && \
         python tests/test_elastic_memory_e2e.py --baseline'
 ```
+
+## Test Runner Script
+
+全テストをまとめて実行する場合:
+
+```bash
+bash scripts/run_amd_tests.sh           # 全 tier
+bash scripts/run_amd_tests.sh --quick   # Tier 1-2 のみ (GPU 不要)
+bash scripts/run_amd_tests.sh --gpu     # Tier 3-4 のみ (GPU 必須)
+```
+
+| Tier | 内容 | GPU 必須 |
+|------|------|---------|
+| 1a | 共有メモリ (CPU テスト) | No |
+| 1b | ビルド・検出ロジック | No |
+| 2 | pre-commit (lint, format) | No |
+| 3a | ROCm VMM スモーク | Yes |
+| 3b | ページアライアシング | Yes |
+| 4 | KVCacheManager 統合 | Yes |
+
+実行後、PASS/FAIL/SKIP のサマリーが表示されます。
 
 ## Bugs Fixed During Validation
 
