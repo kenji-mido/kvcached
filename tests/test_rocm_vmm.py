@@ -60,7 +60,7 @@ def test_kv_tensor_create():
     # Verify tensor is on GPU and has expected properties
     t = tensors[0]
     assert t.is_cuda, "Tensor should be on GPU"
-    assert t.dtype == torch.float16, "Tensor dtype should match requested dtype_size=2"
+    assert t.dtype == torch.int16, "Tensor dtype should match requested dtype_size=2 (int16)"
     assert t.numel() > 0, "Tensor should have elements"
 
     shutdown_kvcached()
