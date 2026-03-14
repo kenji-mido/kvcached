@@ -38,7 +38,7 @@
     gpu_result_t result = (call);                                              \
     if (GPU_SUCCESS != result) {                                               \
       const char *errMsg = gpu_get_drv_error_string(result);                   \
-      ASSERT(0, "Error when exec " #call " %s-%d code:%d err:%s",             \
+      ASSERT(0, "Error when exec " #call " %s-%d code:%d err:%s",              \
              __FUNCTION__, __LINE__, (int)result, errMsg);                     \
     }                                                                          \
   }
@@ -48,7 +48,7 @@
     gpu_result_t result = (call);                                              \
     if (GPU_SUCCESS != result) {                                               \
       const char *errMsg = gpu_get_drv_error_string(result);                   \
-      WARN(0, "Error when exec " #call " %s-%d code:%d err:%s", __FUNCTION__, \
+      WARN(0, "Error when exec " #call " %s-%d code:%d err:%s", __FUNCTION__,  \
            __LINE__, (int)result, errMsg);                                     \
     }                                                                          \
     status_val = result;                                                       \
@@ -57,9 +57,9 @@
 static inline void checkRtError(gpu_rt_error_t res, const char *tok,
                                 const char *file, unsigned line) {
   if (res != GPU_RT_SUCCESS) {
-    std::cerr << file << ':' << line << ' ' << tok
-              << " failed in GPU runtime (" << (unsigned)res
-              << "): " << gpu_get_rt_error_string(res) << std::endl;
+    std::cerr << file << ':' << line << ' ' << tok << " failed in GPU runtime ("
+              << (unsigned)res << "): " << gpu_get_rt_error_string(res)
+              << std::endl;
     abort();
   }
 }
@@ -70,9 +70,8 @@ static inline void checkDrvError(gpu_result_t res, const char *tok,
                                  const char *file, unsigned line) {
   if (res != GPU_SUCCESS) {
     const char *errStr = gpu_get_drv_error_string(res);
-    std::cerr << file << ':' << line << ' ' << tok
-              << " failed in GPU driver (" << (unsigned)res << "): " << errStr
-              << std::endl;
+    std::cerr << file << ':' << line << ' ' << tok << " failed in GPU driver ("
+              << (unsigned)res << "): " << errStr << std::endl;
     abort();
   }
 }

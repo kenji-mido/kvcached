@@ -33,9 +33,9 @@ def test_rocm_detection_logic_hip_absent():
 def test_page_size_validation_cuda():
     """CUDA path requires 2MB-aligned page sizes."""
     with patch.object(torch.version, "hip", None):
-        from kvcached.utils import _get_page_size
-
         import os
+
+        from kvcached.utils import _get_page_size
 
         # Valid: 2MB
         with patch.dict(os.environ, {"KVCACHED_PAGE_SIZE_MB": "2"}):
@@ -49,9 +49,9 @@ def test_page_size_validation_cuda():
 def test_page_size_validation_rocm():
     """ROCm path allows 1MB-aligned page sizes."""
     with patch.object(torch.version, "hip", "7.1.0"):
-        from kvcached.utils import _get_page_size
-
         import os
+
+        from kvcached.utils import _get_page_size
 
         # Valid: 2MB
         with patch.dict(os.environ, {"KVCACHED_PAGE_SIZE_MB": "2"}):
