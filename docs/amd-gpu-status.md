@@ -121,11 +121,30 @@ Baseline comparison (vanilla vLLM without kvcached):
 1. **PR to `kenji-mido/kvcached` main branch** — merge `feature/amd-gpu-support`
 2. **Upstream to original kvcached repo** — the 3 C++ fixes + setup.py change are minimal and safe
 
+### Test Quality Improvements
+
+1. **`test_gpu_compat.py` — ROCm detection tests are tautological**
+   - `test_rocm_detection_logic_hip_present/absent` only verify that mock patching works,
+     not that `setup.py` actually uses `torch.version.hip` correctly
+   - Fix: import and test the actual `IS_ROCM` logic from `setup.py`
+2. **`test_gpu_compat.py` — no negative/error case testing**
+   - Missing: CUDA rejects 1MB page size, invalid strings raise ValueError, etc.
+   - Fix: add `pytest.raises(ValueError)` tests for invalid inputs
+3. **`test_elastic_memory_e2e.py` / `test_sglang_e2e.py` — hardcoded thresholds**
+   - Magic numbers (5%, 10%, 100MB, 500MB) are not documented and GPU-size dependent
+   - Fix: add comments explaining each threshold, consider deriving from `gpu_total_bytes()`
+4. **`setup_amd_dev.sh` — `$?` captures grep exit code, not Docker**
+   - Pipeline `docker run ... | grep -v ...` → `$?` is grep's exit code
+   - Fix: use `set -o pipefail` or `PIPESTATUS[0]`
+5. **`setup_amd_dev.sh` — summary ignores baseline results**
+   - Only checks `VLLM_ELASTIC` and `SGLANG_ELASTIC`, ignores `*_BASELINE`
+   - Fix: check all 4 results in summary
+
 ### Remaining Work
 
-3. **Multi-GPU testing** — not yet tested with tensor parallelism on ROCm
-4. **Larger model testing** — validated with opt-125m; test with larger models under memory pressure
-5. **CI/CD** — add ROCm CI pipeline (requires AMD GPU runner or Docker-in-Docker)
+1. **Multi-GPU testing** — not yet tested with tensor parallelism on ROCm
+2. **Larger model testing** — validated with opt-125m; test with larger models under memory pressure
+3. **CI/CD** — add ROCm CI pipeline (requires AMD GPU runner or Docker-in-Docker)
 
 ## Test Environments
 

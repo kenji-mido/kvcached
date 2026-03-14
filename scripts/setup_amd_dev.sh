@@ -172,7 +172,7 @@ echo "    $SGLANG_IMAGE \\"
 echo "    bash -c 'cd /kvcached && pip install -e . --no-build-isolation && python tests/test_sglang_e2e.py --baseline'"
 echo ""
 
-if [ $VLLM_ELASTIC -eq 0 ] && [ $SGLANG_ELASTIC -eq 0 ]; then
+if [ $VLLM_ELASTIC -eq 0 ] && [ $VLLM_BASELINE -eq 0 ] && [ $SGLANG_ELASTIC -eq 0 ] && [ $SGLANG_BASELINE -eq 0 ]; then
     echo "  All tests PASSED."
     exit 0
 else
