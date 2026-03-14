@@ -356,9 +356,10 @@ def main():
             f"GPU range: {fmt(p3.min_gpu)} – {fmt(p3.peak_gpu)} MB  "
             f"(delta {fmt(gpu_range)} MB)",
         ))
+        # SGLang allocates CUDA graphs incrementally, so allow ~500 MB drift
         checks.append((
-            "GPU memory unchanged after requests complete  (no free/unmap)",
-            abs(gpu_post - gpu_idle) < 100 * MB,
+            "GPU memory roughly stable after requests  (no elastic free/unmap)",
+            abs(gpu_post - gpu_idle) < 500 * MB,
             f"idle {fmt(gpu_idle)} MB → after {fmt(gpu_post)} MB  "
             f"(delta {fmt(abs(gpu_post - gpu_idle))} MB)",
         ))

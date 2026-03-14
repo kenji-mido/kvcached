@@ -122,7 +122,17 @@ docker run --rm \
     | grep -v "^\[aiter\]\|^INFO:aiter\|^\[Gloo\]\|^Loading pt\|^Capturing\|clang.*option\|^failed to\|type hints\|compile_template\|start build\|finish build\|import \["
 SGLANG_ELASTIC=$?
 
-# ── 8. Summary ────────────────────────────────────────────────────────────
+# ── 8. SGLang baseline (no kvcached) ─────────────────────────────────────
+log "SGLang baseline (no kvcached)..."
+docker run --rm \
+    $DOCKER_GPU_ARGS \
+    -v "$WORK_DIR:/kvcached" \
+    "$SGLANG_IMAGE" \
+    bash -c 'cd /kvcached && pip install -e . --no-build-isolation -q 2>&1 | tail -1 && python3 tests/test_sglang_e2e.py --baseline 2>&1' \
+    | grep -v "^\[aiter\]\|^INFO:aiter\|^\[Gloo\]\|^Loading pt\|^Capturing\|clang.*option\|^failed to\|type hints\|compile_template\|start build\|finish build\|import \["
+SGLANG_BASELINE=$?
+
+# ── 9. Summary ────────────────────────────────────────────────────────────
 log "Summary"
 
 echo ""
@@ -130,9 +140,10 @@ echo "============================================"
 echo "  Results"
 echo "============================================"
 echo ""
-echo "  vLLM + kvcached (elastic):    $([ $VLLM_ELASTIC -eq 0 ] && echo 'PASS' || echo 'FAIL')"
-echo "  vLLM baseline (no kvcached):  $([ $VLLM_BASELINE -eq 0 ] && echo 'PASS' || echo 'FAIL')"
-echo "  SGLang + kvcached (elastic):  $([ $SGLANG_ELASTIC -eq 0 ] && echo 'PASS' || echo 'FAIL')"
+echo "  vLLM + kvcached (elastic):     $([ $VLLM_ELASTIC -eq 0 ] && echo 'PASS' || echo 'FAIL')"
+echo "  vLLM baseline (no kvcached):   $([ $VLLM_BASELINE -eq 0 ] && echo 'PASS' || echo 'FAIL')"
+echo "  SGLang + kvcached (elastic):   $([ $SGLANG_ELASTIC -eq 0 ] && echo 'PASS' || echo 'FAIL')"
+echo "  SGLang baseline (no kvcached): $([ $SGLANG_BASELINE -eq 0 ] && echo 'PASS' || echo 'FAIL')"
 echo ""
 echo "  To re-run individual tests:"
 echo ""
@@ -153,6 +164,12 @@ echo "  docker run --rm \\"
 echo "    $DOCKER_GPU_ARGS -v $WORK_DIR:/kvcached \\"
 echo "    $SGLANG_IMAGE \\"
 echo "    bash -c 'cd /kvcached && pip install -e . --no-build-isolation && python tests/test_sglang_e2e.py'"
+echo ""
+echo "  # SGLang baseline (no kvcached)"
+echo "  docker run --rm \\"
+echo "    $DOCKER_GPU_ARGS -v $WORK_DIR:/kvcached \\"
+echo "    $SGLANG_IMAGE \\"
+echo "    bash -c 'cd /kvcached && pip install -e . --no-build-isolation && python tests/test_sglang_e2e.py --baseline'"
 echo ""
 
 if [ $VLLM_ELASTIC -eq 0 ] && [ $SGLANG_ELASTIC -eq 0 ]; then
