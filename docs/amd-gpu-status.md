@@ -54,12 +54,29 @@ Binary verification: `vmm_ops.so` links to `libamdhip64.so.7`, `libhsa-runtime64
 
 ### vLLM Integration (E2E)
 
+Tested with both source build and official Docker image (`vllm/vllm-openai-rocm:latest`).
+
 | Test | Result |
 |------|--------|
-| vLLM v0.17.1 source build for ROCm 7.1 | PASS |
-| ROCm platform detection (`amdsmi`) | PASS |
+| vLLM v0.17.1 ROCm Docker | PASS |
+| ROCm platform detection | PASS |
 | Autopatch (5/6 patches applied, v0.9+ path) | PASS |
 | Inference with `facebook/opt-125m` | PASS — correct text generated |
+| Elastic memory benchmark (6 checks) | ALL PASS |
+
+### SGLang Integration (E2E)
+
+Tested with official Docker image (`lmsysorg/sglang-daily:v0.5.9-rocm720-mi30x`).
+
+| Test | Result |
+|------|--------|
+| SGLang v0.5.9 ROCm Docker | PASS |
+| Autopatch (4/4 patches applied) | PASS |
+| Inference with `facebook/opt-125m` | PASS — correct text generated |
+| kvcached IPC (kvctl) memory tracking | PASS — Virtual/Physical/Used/Prealloc visible |
+
+Note: SGLang on bare-metal (pip install) is not supported by SGLang itself.
+The official Docker image is the recommended and tested deployment method.
 
 ### Elastic Memory Benchmark (`test_elastic_memory_e2e.py`)
 
@@ -68,8 +85,8 @@ Verified with `MAX_RESERVED_PAGES=2` to force `hipMemUnmap`:
 | Check | Result |
 |-------|--------|
 | Physical << Virtual at idle (0.05%) | PASS |
-| Physical grows on-demand during inference (48 → 864 MB) | PASS |
-| Physical shrinks after completion (864 → 96 MB, hipMemUnmap) | PASS |
+| Physical grows on-demand during inference (48 → 960 MB) | PASS |
+| Physical shrinks after completion (960 → 96 MB, hipMemUnmap) | PASS |
 | GPU memory correlates with Physical changes | PASS |
 | Used pages cycle (alloc → free) | PASS |
 | Pages re-mapped on new requests | PASS |
@@ -86,7 +103,7 @@ Baseline comparison (vanilla vLLM without kvcached):
 | `hipMemAddressReserve` type mismatch | HIP takes `void*`, CUDA takes `CUdeviceptr` (integer) | Added `reinterpret_cast<gpu_devptr_t>()` |
 | `test_kv_tensor_alloc_free` segfault | `total_kv_size < compound_page_size` in contiguous layout | Round up `total_kv_size` to multiple of `compound_page_size` |
 | `hipDeviceAttributeVMMSupported` = 0 | ROCm bug | Skipped via `#ifndef USE_ROCM` |
-| SGLang `sgl-kernel` for ROCm 7.1 | Wheel not published (404) | SGLang integration deferred |
+| SGLang `sgl-kernel` bare-metal | Wheel not published for ROCm 7.1 | Use official Docker image instead |
 
 ## Next Steps
 
@@ -97,12 +114,13 @@ Baseline comparison (vanilla vLLM without kvcached):
 
 ### Remaining Work
 
-3. **SGLang integration** — blocked on `sgl-kernel` ROCm 7.1 wheel availability
-4. **Multi-GPU testing** — not yet tested with tensor parallelism on ROCm
-5. **Larger model testing** — validated with opt-125m; test with larger models under memory pressure
-6. **CI/CD** — add ROCm CI pipeline (requires AMD GPU runner)
+3. **Multi-GPU testing** — not yet tested with tensor parallelism on ROCm
+4. **Larger model testing** — validated with opt-125m; test with larger models under memory pressure
+5. **CI/CD** — add ROCm CI pipeline (requires AMD GPU runner)
 
-## Test Environment
+## Test Environments
+
+### Bare-metal (vLLM source build)
 
 - GPU: AMD Instinct MI300X VF (192 GB, gfx942)
 - ROCm: 7.1.0
@@ -110,6 +128,18 @@ Baseline comparison (vanilla vLLM without kvcached):
 - vLLM: 0.17.1+rocm710 (source build)
 - Python: 3.12.3
 - OS: Ubuntu 24.04 (Linux 6.8.0)
+
+### Docker — vLLM
+
+- Image: `vllm/vllm-openai-rocm:latest`
+- PyTorch: 2.9.1+rocm7.0
+- vLLM: 0.17.1
+
+### Docker — SGLang
+
+- Image: `lmsysorg/sglang-daily:v0.5.9-rocm720-mi30x-20260312`
+- PyTorch: 2.9.1+rocm7.2
+- SGLang: 0.5.9
 
 ## Branch Info
 

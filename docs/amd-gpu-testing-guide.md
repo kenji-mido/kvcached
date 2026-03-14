@@ -101,15 +101,35 @@ The benchmark:
 - Prints timeline with bar chart showing memory changes
 - Verifies 6 checks (elastic growth, shrinkage, hipMemUnmap, re-map)
 
-### 6. vLLM/SGLang integration (manual)
+### 6. vLLM/SGLang integration via Docker (recommended)
 
 ```bash
-# With ROCm vLLM (source build):
-ENABLE_KVCACHED=true KVCACHED_AUTOPATCH=1 \
-    python -m vllm.entrypoints.openai.api_server \
-    --model <model> --no-enable-prefix-caching --enforce-eager
+# vLLM — official ROCm Docker image
+docker run --rm --entrypoint bash \
+    --device=/dev/kfd --device=/dev/dri --group-add video --shm-size 16G \
+    --security-opt seccomp=unconfined \
+    -v /path/to/kvcached:/kvcached \
+    vllm/vllm-openai-rocm:latest \
+    -c 'cd /kvcached && pip install -e . --no-build-isolation -q && \
+        python tests/test_elastic_memory_e2e.py'
 
-# SGLang: blocked on sgl-kernel ROCm 7.1 wheel availability
+# SGLang — official ROCm Docker image
+docker run --rm \
+    --device=/dev/kfd --device=/dev/dri --group-add video --shm-size 16G \
+    --security-opt seccomp=unconfined \
+    -v /path/to/kvcached:/kvcached \
+    lmsysorg/sglang-daily:v0.5.9-rocm720-mi30x-20260312 \
+    bash -c 'cd /kvcached && pip install -e . --no-build-isolation -q && \
+        python tests/test_sglang_e2e.py'
+
+# Baseline comparison (vanilla vLLM, no kvcached)
+docker run --rm --entrypoint bash \
+    --device=/dev/kfd --device=/dev/dri --group-add video --shm-size 16G \
+    --security-opt seccomp=unconfined \
+    -v /path/to/kvcached:/kvcached \
+    vllm/vllm-openai-rocm:latest \
+    -c 'cd /kvcached && pip install -e . --no-build-isolation -q && \
+        python tests/test_elastic_memory_e2e.py --baseline'
 ```
 
 ## Bugs Fixed During Validation
