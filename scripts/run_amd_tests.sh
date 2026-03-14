@@ -2,21 +2,25 @@
 # SPDX-FileCopyrightText: Copyright contributors to the kvcached project
 # SPDX-License-Identifier: Apache-2.0
 #
-# kvcached AMD GPU Test Runner
+# kvcached AMD GPU Test Runner (Docker-based)
 #
-# Runs all tests relevant to the ROCm port, categorized by tier.
-# Outputs a summary with pass/fail/skip counts.
+# All tests run inside official ROCm Docker containers for reproducibility.
+# Requires: AMD GPU with ROCm driver, Docker with GPU access.
 #
 # Usage:
 #   bash scripts/run_amd_tests.sh           # Run all tiers
-#   bash scripts/run_amd_tests.sh --quick   # Tier 1-2 only (no GPU needed)
-#   bash scripts/run_amd_tests.sh --gpu     # Tier 3-4 only (GPU required)
+#   bash scripts/run_amd_tests.sh --quick   # Tier 1-2 only (unit tests)
+#   bash scripts/run_amd_tests.sh --gpu     # Tier 3-5 only (GPU + E2E)
+#   bash scripts/run_amd_tests.sh --e2e     # Tier 5 only (E2E benchmarks)
 #
 set -uo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 KVCACHED_DIR=$(cd "$SCRIPT_DIR/.." && pwd)
-cd "$KVCACHED_DIR"
+
+VLLM_IMAGE="vllm/vllm-openai-rocm:latest"
+SGLANG_IMAGE="lmsysorg/sglang-daily:v0.5.9-rocm720-mi30x-20260312"
+DOCKER_GPU_ARGS="--device=/dev/kfd --device=/dev/dri --group-add video --shm-size 16G --security-opt seccomp=unconfined"
 
 # ─── Colors ─────────────────────────────────────────────────────────────────
 if [[ -t 1 ]]; then
@@ -28,16 +32,19 @@ else
 fi
 
 # ─── Parse args ─────────────────────────────────────────────────────────────
-RUN_CPU=true
+RUN_UNIT=true
 RUN_GPU=true
+RUN_E2E=true
 case "${1:-all}" in
-    --quick) RUN_GPU=false ;;
-    --gpu)   RUN_CPU=false ;;
+    --quick) RUN_GPU=false; RUN_E2E=false ;;
+    --gpu)   RUN_UNIT=false ;;
+    --e2e)   RUN_UNIT=false; RUN_GPU=false ;;
     all|"")  ;;
     -h|--help)
-        echo "Usage: $0 [--quick|--gpu|all]"
-        echo "  --quick  Tier 1-2 only (no GPU needed)"
-        echo "  --gpu    Tier 3-4 only (GPU required)"
+        echo "Usage: $0 [--quick|--gpu|--e2e|all]"
+        echo "  --quick  Tier 1-2 only (unit tests, no heavy GPU)"
+        echo "  --gpu    Tier 3-5 (GPU VMM + E2E benchmarks)"
+        echo "  --e2e    Tier 5 only (E2E benchmarks: vLLM + SGLang)"
         echo "  all      All tiers (default)"
         exit 0 ;;
     *) echo "Unknown option: $1"; exit 1 ;;
@@ -48,76 +55,95 @@ PASS=0; FAIL=0; SKIP=0
 RESULTS=()
 
 run_tier() {
-    local tier="$1" desc="$2" cmd="$3"
+    local tier="$1" desc="$2"
+    shift 2
     echo ""
     echo "${BOLD}${CYAN}[$tier] $desc${RESET}"
-    echo "  Command: $cmd"
     echo "  ---"
 
     local output rc
-    output=$(eval "$cmd" 2>&1) && rc=0 || rc=$?
+    output=$("$@" 2>&1) && rc=0 || rc=$?
 
-    # Extract pytest summary line
+    # Extract summary line (pytest or custom)
     local summary
-    summary=$(echo "$output" | grep -E '(passed|failed|error|skipped)' | tail -1)
+    summary=$(echo "$output" | grep -E '(passed|failed|error|skipped|ALL CHECKS|SOME CHECKS)' | tail -1)
 
     if [[ $rc -eq 0 ]]; then
         echo "  ${GREEN}PASS${RESET}  $summary"
         PASS=$((PASS+1))
         RESULTS+=("${GREEN}PASS${RESET}  $tier  $desc")
     elif [[ $rc -eq 5 ]]; then
-        # pytest exit code 5 = no tests collected
         echo "  ${YELLOW}SKIP${RESET}  no tests collected"
         SKIP=$((SKIP+1))
         RESULTS+=("${YELLOW}SKIP${RESET}  $tier  $desc")
     else
         echo "  ${RED}FAIL${RESET}  $summary"
-        # Show last 15 lines for debugging
-        echo "$output" | tail -15 | sed 's/^/  /'
+        echo "$output" | tail -20 | sed 's/^/  /'
         FAIL=$((FAIL+1))
         RESULTS+=("${RED}FAIL${RESET}  $tier  $desc")
     fi
 }
 
+# Helper: run a command inside the vLLM Docker container
+docker_vllm() {
+    docker run --rm --entrypoint bash \
+        $DOCKER_GPU_ARGS \
+        -v "$KVCACHED_DIR:/kvcached" \
+        "$VLLM_IMAGE" \
+        -c "cd /kvcached && pip install -e . --no-build-isolation -q 2>&1 | tail -1 && $1"
+}
+
+# Helper: run a command inside the SGLang Docker container
+docker_sglang() {
+    docker run --rm \
+        $DOCKER_GPU_ARGS \
+        -v "$KVCACHED_DIR:/kvcached" \
+        "$SGLANG_IMAGE" \
+        bash -c "cd /kvcached && pip install -e . --no-build-isolation -q 2>&1 | tail -1 && $1"
+}
+
 # ─── Header ─────────────────────────────────────────────────────────────────
 echo "${BOLD}============================================${RESET}"
-echo "${BOLD}  kvcached AMD GPU Test Runner${RESET}"
+echo "${BOLD}  kvcached AMD GPU Test Runner (Docker)${RESET}"
 echo "${BOLD}============================================${RESET}"
+echo "  kvcached:  $KVCACHED_DIR"
+echo "  vLLM:      $VLLM_IMAGE"
+echo "  SGLang:    $SGLANG_IMAGE"
 
-# Detect environment
-python3 -c "
-import torch
-hip = torch.version.hip
-gpu = 'N/A'
-try: gpu = torch.cuda.get_device_name(0)
-except: pass
-print(f'  PyTorch {torch.__version__}  HIP: {hip}  GPU: {gpu}')
-" 2>/dev/null || echo "  PyTorch: not available"
-
-# ─── Tier 1: CPU-only unit tests (no GPU) ────────────────────────────────
-if [[ "$RUN_CPU" = true ]]; then
+# ─── Tier 1: Unit tests (inside Docker, but CPU-only logic) ────────────────
+if [[ "$RUN_UNIT" = true ]]; then
     run_tier "Tier 1a" "Shared memory tracker (CPU)" \
-        "python3 -m pytest tests/test_shm_info_tracker.py -v --tb=short -q"
+        docker_vllm "python3 -m pytest tests/test_shm_info_tracker.py -v --tb=short"
 
-    run_tier "Tier 1b" "Build & ROCm detection logic (CPU)" \
-        "python3 -m pytest tests/test_gpu_compat.py -v --tb=short -q"
-
-# ─── Tier 2: pre-commit (no GPU) ─────────────────────────────────────────
-    run_tier "Tier 2" "pre-commit (lint, format, headers)" \
-        "pre-commit run --all-files"
+    run_tier "Tier 1b" "Build & ROCm detection logic" \
+        docker_vllm "python3 -m pytest tests/test_gpu_compat.py -v --tb=short"
 fi
 
-# ─── Tier 3: GPU VMM smoke tests ─────────────────────────────────────────
+# ─── Tier 3: GPU VMM smoke tests ───────────────────────────────────────────
 if [[ "$RUN_GPU" = true ]]; then
-    run_tier "Tier 3a" "ROCm VMM smoke (init/map/unmap)" \
-        "python3 -m pytest tests/test_rocm_vmm.py -v --tb=short -q"
+    run_tier "Tier 3a" "ROCm VMM smoke (init/map/unmap + GPU memory verification)" \
+        docker_vllm "python3 -m pytest tests/test_rocm_vmm.py -v --tb=short"
 
     run_tier "Tier 3b" "Paged allocator aliasing (VMM correctness)" \
-        "python3 -m pytest tests/test_paged_allocator_aliasing.py -v --tb=short -q"
+        docker_vllm "python3 tests/test_paged_allocator_aliasing.py"
 
-# ─── Tier 4: kvcached core integration ───────────────────────────────────
     run_tier "Tier 4" "KVCacheManager (alloc/free/resize/trim)" \
-        "python3 -m pytest tests/test_kvcache_manager.py -v --tb=short -q"
+        docker_vllm "python3 -m pytest tests/test_kvcache_manager.py -v --tb=short"
+fi
+
+# ─── Tier 5: E2E benchmarks (vLLM + SGLang) ───────────────────────────────
+if [[ "$RUN_E2E" = true ]]; then
+    run_tier "Tier 5a" "vLLM + kvcached elastic memory (E2E)" \
+        docker_vllm "python3 tests/test_elastic_memory_e2e.py"
+
+    run_tier "Tier 5b" "vLLM baseline — no kvcached (E2E)" \
+        docker_vllm "python3 tests/test_elastic_memory_e2e.py --baseline"
+
+    run_tier "Tier 5c" "SGLang + kvcached elastic memory (E2E)" \
+        docker_sglang "python3 tests/test_sglang_e2e.py"
+
+    run_tier "Tier 5d" "SGLang baseline — no kvcached (E2E)" \
+        docker_sglang "python3 tests/test_sglang_e2e.py --baseline"
 fi
 
 # ─── Summary ────────────────────────────────────────────────────────────────

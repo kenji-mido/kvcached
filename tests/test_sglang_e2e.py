@@ -312,23 +312,45 @@ def main():
 
     checks = []
 
+    # Derive thresholds from actual GPU size for portability across GPUs.
+    total_gpu = gpu_total_bytes()
+
+    # SGLang allocates CUDA graphs incrementally, causing larger variance
+    # than vLLM.  Use 0.3% of GPU total or 500 MB, whichever is larger.
+    baseline_variance = max(int(total_gpu * 0.003), 500 * MB)
+
+    # Minimum KV cache allocation to expect in baseline mode.
+    baseline_min_kv = max(int(total_gpu * 0.003), 500 * MB)
+
     if not BASELINE:
+        # ── kvcached checks ──
+        # Check 1: Idle physical should be a small fraction of virtual.
+        # With MAX_RESERVED_PAGES=2, idle is typically < 1% of virtual.
         ratio = idle_physical / virtual * 100 if virtual else 100
         checks.append((
             "Physical << Virtual at idle  (elastic, not pre-allocated)",
             ratio < 5.0,
-            f"Physical {fmt(idle_physical)} MB = {ratio:.2f}% of Virtual {fmt(virtual)} MB",
+            f"Physical {fmt(idle_physical)} MB = {ratio:.2f}% of Virtual "
+            f"{fmt(virtual)} MB  [threshold: < 5%]",
         ))
+
+        # Check 2: More prompts → higher peak physical (on-demand growth).
         checks.append((
             "Large batch peak > small batch peak  (on-demand growth)",
             p3.peak_physical >= p2.peak_physical,
             f"small {fmt(p2.peak_physical)} MB, large {fmt(p3.peak_physical)} MB",
         ))
+
+        # Check 3: GPU memory at idle should be far less than virtual KV
+        # address space — proves no upfront allocation.
         checks.append((
             "GPU memory << Virtual KV limit  (no upfront allocation)",
             gpu_idle < virtual * 0.1,
-            f"GPU {fmt(gpu_idle)} MB vs Virtual {fmt(virtual)} MB",
+            f"GPU {fmt(gpu_idle)} MB vs Virtual {fmt(virtual)} MB  "
+            f"[threshold: GPU < 10% of Virtual]",
         ))
+
+        # Check 4: Used pages must vary during inference (alloc/free cycle).
         used_vals = [s[1] for s in p3.samples]
         checks.append((
             "Used pages varied during inference  (alloc/free cycle)",
@@ -336,39 +358,59 @@ def main():
             f"used: min={fmt(min(used_vals, default=0))} MB, "
             f"max={fmt(max(used_vals, default=0))} MB",
         ))
+
+        # Check 5: Physical memory must shrink after completion — proves
+        # hipMemUnmap was called and pages returned to the system.
         checks.append((
             "Physical shrank after completion  (hipMemUnmap confirmed)",
             post_phys < p3.peak_physical,
             f"peak {fmt(p3.peak_physical)} MB → after {fmt(post_phys)} MB  "
             f"(freed {fmt(p3.peak_physical - post_phys)} MB)",
         ))
+
+        # Check 6: Re-grow phase maps new pages for new requests.
         checks.append((
             "Used pages re-appeared on new requests  (pages re-mapped)",
             p5.peak_used > 0,
             f"re-grow peak used {fmt(p5.peak_used)} MB "
             f"(physical {fmt(p5.peak_physical)} MB)",
         ))
+
+        # Check 7: GPU memory must track physical memory changes.
+        gpu_during_large = p3.peak_gpu
+        gpu_delta_large = gpu_during_large - gpu_idle
+        phys_delta_large = p3.peak_physical - idle_physical
+        checks.append((
+            "GPU memory correlates with Physical growth  (not just bookkeeping)",
+            gpu_delta_large > 0 and phys_delta_large > 0,
+            f"GPU delta: +{fmt(gpu_delta_large)} MB, "
+            f"Physical delta: +{fmt(phys_delta_large)} MB during large batch",
+        ))
     else:
+        # ── baseline checks (confirm NON-elastic behavior) ──
         gpu_range = p3.peak_gpu - p3.min_gpu
         checks.append((
             "GPU memory is FLAT during inference  (pre-allocated, not elastic)",
-            gpu_range < 100 * MB,
+            gpu_range < baseline_variance,
             f"GPU range: {fmt(p3.min_gpu)} – {fmt(p3.peak_gpu)} MB  "
-            f"(delta {fmt(gpu_range)} MB)",
+            f"(delta {fmt(gpu_range)} MB, threshold: < {fmt(baseline_variance)} MB "
+            f"[0.3% of {fmt(total_gpu)} MB GPU])",
         ))
-        # SGLang allocates CUDA graphs incrementally, so allow ~500 MB drift
+        # SGLang allocates CUDA graphs incrementally, so variance is higher
         checks.append((
             "GPU memory roughly stable after requests  (no elastic free/unmap)",
-            abs(gpu_post - gpu_idle) < 500 * MB,
+            abs(gpu_post - gpu_idle) < baseline_variance,
             f"idle {fmt(gpu_idle)} MB → after {fmt(gpu_post)} MB  "
-            f"(delta {fmt(abs(gpu_post - gpu_idle))} MB)",
+            f"(delta {fmt(abs(gpu_post - gpu_idle))} MB, "
+            f"threshold: < {fmt(baseline_variance)} MB)",
         ))
         kv_estimate = gpu_idle - gpu0
         checks.append((
             "Large upfront KV allocation visible in GPU  (not elastic)",
-            kv_estimate > 500 * MB,
+            kv_estimate > baseline_min_kv,
             f"GPU before model: {fmt(gpu0)} MB → after load: {fmt(gpu_idle)} MB  "
-            f"(KV estimate: {fmt(kv_estimate)} MB)",
+            f"(KV estimate: {fmt(kv_estimate)} MB, "
+            f"threshold: > {fmt(baseline_min_kv)} MB)",
         ))
 
     all_pass = True

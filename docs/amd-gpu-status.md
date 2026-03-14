@@ -1,12 +1,12 @@
 # AMD GPU (ROCm) Porting Status
 
-Last updated: 2026-03-14
+Last updated: 2026-03-14 (test quality session)
 
 ## Current Status: Validated on AMD Instinct MI300X — vLLM & SGLang
 
-All HIP VMM APIs verified on real hardware.
+All HIP VMM APIs verified on real hardware via `hipMemGetInfo` physical GPU memory measurement.
 Both vLLM and SGLang integration tested end-to-end via official ROCm Docker images.
-Elastic memory (hipMemMap/hipMemUnmap) confirmed with visual benchmarks.
+Elastic memory (hipMemMap/hipMemUnmap) confirmed: per-page +8MB/-8MB delta measured, linear scaling verified.
 
 ## Completed
 
@@ -34,8 +34,8 @@ Elastic memory (hipMemMap/hipMemUnmap) confirmed with visual benchmarks.
 |------|--------|
 | C++ extension build (`-DUSE_ROCM`, links `libamdhip64.so.7`) | PASS |
 | CPU-only tests (8 tests) | PASS |
-| GPU compat tests (5 tests) | PASS |
-| ROCm VMM smoke tests (3 tests: init, granularity, alloc/map/unmap) | PASS |
+| GPU compat tests (15 tests) | PASS |
+| ROCm VMM tests (7 tests: init, granularity, create, map/unmap, GPU memory, linear delta, lifecycle) | PASS |
 
 ### HIP VMM API Hardware Verification
 
@@ -65,7 +65,7 @@ Tested with both source build and official Docker image (`vllm/vllm-openai-rocm:
 | ROCm platform detection | PASS |
 | Autopatch (5/6 patches applied, v0.9+ path) | PASS |
 | Inference with `facebook/opt-125m` | PASS — correct text generated |
-| Elastic memory benchmark (6 checks) | ALL PASS |
+| Elastic memory benchmark (7 checks) | ALL PASS |
 
 ### SGLang Integration (E2E)
 
@@ -76,7 +76,7 @@ Tested with official Docker image (`lmsysorg/sglang-daily:v0.5.9-rocm720-mi30x`)
 | SGLang v0.5.9 ROCm Docker | PASS |
 | Autopatch (4/4 patches applied) | PASS |
 | Inference with `facebook/opt-125m` | PASS — correct text generated |
-| Elastic memory benchmark (6 checks) | ALL PASS |
+| Elastic memory benchmark (7 checks) | ALL PASS |
 | kvcached IPC (kvctl) memory tracking | PASS — Virtual/Physical/Used/Prealloc visible |
 
 SGLang elastic benchmark results (64 prompts × 512 tokens, `MAX_RESERVED_PAGES=2`):
@@ -87,22 +87,40 @@ SGLang elastic benchmark results (64 prompts × 512 tokens, `MAX_RESERVED_PAGES=
 Note: SGLang on bare-metal (pip install) is not supported by SGLang itself.
 The official Docker image is the recommended and tested deployment method.
 
-### Elastic Memory Benchmark (`test_elastic_memory_e2e.py`)
+### Elastic Memory Benchmark (`test_elastic_memory_e2e.py` / `test_sglang_e2e.py`)
 
-Verified with `MAX_RESERVED_PAGES=2` to force `hipMemUnmap`:
+Verified with `MAX_RESERVED_PAGES=2` to force `hipMemUnmap`.
+Both vLLM and SGLang pass all 7 checks:
 
-| Check | Result |
-|-------|--------|
-| Physical << Virtual at idle (0.05%) | PASS |
-| Physical grows on-demand during inference (48 → 960 MB) | PASS |
-| Physical shrinks after completion (960 → 96 MB, hipMemUnmap) | PASS |
-| GPU memory correlates with Physical changes | PASS |
-| Used pages cycle (alloc → free) | PASS |
-| Pages re-mapped on new requests | PASS |
+| Check | What it proves | Result |
+|-------|---------------|--------|
+| Physical << Virtual at idle (< 5%) | Not pre-allocated | PASS |
+| Large batch peak > Small batch peak | On-demand growth | PASS |
+| GPU memory << Virtual KV limit (< 10%) | No upfront allocation | PASS |
+| Used pages varied during inference | alloc/free cycle works | PASS |
+| Physical shrank after completion | hipMemUnmap confirmed | PASS |
+| Pages re-mapped on new requests | Page reuse works | PASS |
+| GPU memory correlates with Physical growth | Real hardware, not bookkeeping | PASS |
 
-Baseline comparison (vanilla vLLM without kvcached):
-- vLLM allocates 98,498 MB upfront (50.2% of 192 GB)
+Baseline comparison (vanilla vLLM/SGLang without kvcached):
+- Engines allocate KV cache memory upfront (50%+ of GPU)
 - GPU memory stays flat during all phases — no elasticity
+- 3/3 baseline checks PASS (confirms NON-elastic behavior)
+
+### Physical GPU Memory Verification (`test_rocm_vmm.py`)
+
+Measured via `hipMemGetInfo` (`torch.cuda.mem_get_info`), not mocks:
+
+```
+Map page 0 (offset=0MB):  482 MB → 490 MB  (+8 MB)
+Map page 1 (offset=8MB):  490 MB → 498 MB  (+8 MB)
+Map page 2 (offset=16MB): 498 MB → 506 MB  (+8 MB)
+Map page 3 (offset=24MB): 506 MB → 514 MB  (+8 MB)
+Unmap all:                 514 MB → 482 MB  (-32 MB, exact baseline return)
+```
+
+Each compound page = `page_size × num_layers × num_kv_buffers` = 2MB × 2 × 2 = **8 MB**.
+Delta is exactly +8 MB per map, -8 MB per unmap, linear scaling confirmed.
 
 ## Known Issues (Resolved)
 
@@ -121,24 +139,39 @@ Baseline comparison (vanilla vLLM without kvcached):
 1. **PR to `kenji-mido/kvcached` main branch** — merge `feature/amd-gpu-support`
 2. **Upstream to original kvcached repo** — the 3 C++ fixes + setup.py change are minimal and safe
 
-### Test Quality Improvements
+### Test Quality Improvements (Completed)
 
-1. **`test_gpu_compat.py` — ROCm detection tests are tautological**
-   - `test_rocm_detection_logic_hip_present/absent` only verify that mock patching works,
-     not that `setup.py` actually uses `torch.version.hip` correctly
-   - Fix: import and test the actual `IS_ROCM` logic from `setup.py`
-2. **`test_gpu_compat.py` — no negative/error case testing**
-   - Missing: CUDA rejects 1MB page size, invalid strings raise ValueError, etc.
-   - Fix: add `pytest.raises(ValueError)` tests for invalid inputs
-3. **`test_elastic_memory_e2e.py` / `test_sglang_e2e.py` — hardcoded thresholds**
-   - Magic numbers (5%, 10%, 100MB, 500MB) are not documented and GPU-size dependent
-   - Fix: add comments explaining each threshold, consider deriving from `gpu_total_bytes()`
-4. **`setup_amd_dev.sh` — `$?` captures grep exit code, not Docker**
-   - Pipeline `docker run ... | grep -v ...` → `$?` is grep's exit code
-   - Fix: use `set -o pipefail` or `PIPESTATUS[0]`
-5. **`setup_amd_dev.sh` — summary ignores baseline results**
-   - Only checks `VLLM_ELASTIC` and `SGLANG_ELASTIC`, ignores `*_BASELINE`
-   - Fix: check all 4 results in summary
+1. **`test_gpu_compat.py` — ROCm detection tests replaced** ✅
+   - Was: inline `torch.version.hip is not None` (tautological — only tested Python itself)
+   - Now: imports and tests the actual `_is_rocm()` function from `kvcached.utils`,
+     plus a consistency check against `setup.py`'s `IS_ROCM`
+   - Added: `test_is_rocm_matches_runtime` (no mocks — tests real environment)
+   - Added: `test_setup_py_is_rocm_consistent` (subprocess check)
+2. **`test_gpu_compat.py` — error cases expanded** ✅
+   - Added: `test_page_size_rocm_rejects_non_1mb_aligned` (ROCm accepts 3MB)
+   - Added: `test_page_size_rejects_float_string` (e.g. "2.5")
+3. **`test_rocm_vmm.py` — physical GPU memory verification added** ✅
+   - **Bug found and fixed**: tests were passing `[0, 1, 2, 3]` as page indices, but
+     `map_to_kv_tensors` expects byte offsets (multiples of `compound_page_size = 8 MB`).
+     All small integers mapped to `page_id = N / 8MB = 0`, so only page 0 was ever mapped.
+     Tests passed coincidentally because 1 page = 8 MB matched the (wrong) threshold.
+   - Fixed: tests now pass correct byte offsets `[0, 8MB, 16MB, 24MB]`
+   - Added: `test_map_increases_gpu_memory` — 4 pages → +32 MB, unmap → -32 MB
+   - Added: `test_map_per_page_delta_is_linear` — maps pages one at a time,
+     asserts exactly +8 MB per page via `hipMemGetInfo` (no tolerance, exact match)
+   - Added: `test_map_unmap_cycle_returns_memory` — full lifecycle:
+     map → write → read → unmap (exact baseline return) → remap (same delta)
+   - Added: `tests/diag_gpu_memory.py` — standalone diagnostic that prints raw
+     `hipMemGetInfo` values at every step for manual verification
+4. **`test_elastic_memory_e2e.py` / `test_sglang_e2e.py` — thresholds documented and dynamic** ✅
+   - All magic numbers now have inline comments explaining their rationale
+   - Baseline thresholds derived from `gpu_total_bytes()` (portable across GPU sizes)
+   - Added Check 7: "GPU memory correlates with Physical growth" — ensures VMM
+     operations affect real hardware, not just bookkeeping counters
+5. **`setup_amd_dev.sh` — pipeline exit code bug fixed** ✅
+   - Changed `$?` → `${PIPESTATUS[0]}` for all 4 Docker pipeline commands
+   - Summary already checks all 4 results (VLLM_ELASTIC, VLLM_BASELINE,
+     SGLANG_ELASTIC, SGLANG_BASELINE)
 
 ### Remaining Work
 

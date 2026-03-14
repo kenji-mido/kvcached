@@ -20,19 +20,58 @@ def test_cuda_build_compiles():
     assert result.returncode == 0, f"Build failed:\n{result.stderr}"
 
 
-def test_rocm_detection_sets_is_rocm_true():
-    """setup.py sets IS_ROCM=True when torch.version.hip is set."""
+# ── ROCm detection: test the ACTUAL _is_rocm() function ───────────────────
+# These tests import kvcached.utils._is_rocm() and verify it returns the
+# correct value based on torch.version.hip, rather than re-implementing
+# the check inline (which was tautological — it only proved that
+# `torch.version.hip is not None` evaluates correctly in Python).
+
+
+def test_is_rocm_returns_true_on_hip():
+    """_is_rocm() returns True when torch.version.hip is set."""
+    from kvcached.utils import _is_rocm
+
     with patch.object(torch.version, "hip", "7.1.0"):
-        # Re-evaluate the expression used in setup.py
-        is_rocm = torch.version.hip is not None
-        assert is_rocm is True, "IS_ROCM should be True when hip version is set"
+        assert _is_rocm() is True
 
 
-def test_rocm_detection_sets_is_rocm_false():
-    """setup.py sets IS_ROCM=False when torch.version.hip is None."""
+def test_is_rocm_returns_false_without_hip():
+    """_is_rocm() returns False when torch.version.hip is None."""
+    from kvcached.utils import _is_rocm
+
     with patch.object(torch.version, "hip", None):
-        is_rocm = torch.version.hip is not None
-        assert is_rocm is False, "IS_ROCM should be False when hip is None"
+        assert _is_rocm() is False
+
+
+def test_is_rocm_matches_runtime():
+    """_is_rocm() agrees with the actual runtime torch.version.hip value."""
+    from kvcached.utils import _is_rocm
+
+    # No mocking — test against real runtime
+    expected = torch.version.hip is not None
+    assert _is_rocm() is expected, (
+        f"_is_rocm() returned {_is_rocm()} but torch.version.hip={torch.version.hip}"
+    )
+
+
+def test_setup_py_is_rocm_consistent():
+    """setup.py's IS_ROCM uses the same expression as _is_rocm()."""
+    # Verify that setup.py line `IS_ROCM = torch.version.hip is not None`
+    # produces the same result as the utils function at import time.
+    result = subprocess.run(
+        [sys.executable, "-c",
+         "import torch; "
+         "from kvcached.utils import _is_rocm; "
+         "setup_val = torch.version.hip is not None; "
+         "util_val = _is_rocm(); "
+         "assert setup_val == util_val, "
+         "f'setup.py IS_ROCM={setup_val} != _is_rocm()={util_val}'; "
+         "print('CONSISTENT')"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, f"Consistency check failed:\n{result.stderr}"
+    assert "CONSISTENT" in result.stdout
 
 
 # ── Page size validation: valid cases ──────────────────────────────────────
@@ -98,6 +137,16 @@ def test_page_size_cuda_rejects_3mb():
                 _get_page_size()
 
 
+def test_page_size_rocm_rejects_non_1mb_aligned():
+    """ROCm path rejects sizes not aligned to 1MB (e.g. 3MB is fine, 0.5MB is not)."""
+    from kvcached.utils import _get_page_size
+
+    # 3MB is a valid multiple of 1MB on ROCm
+    with patch.object(torch.version, "hip", "7.1.0"):
+        with patch.dict(os.environ, {"KVCACHED_PAGE_SIZE_MB": "3"}):
+            assert _get_page_size() == 3 * 1024 * 1024
+
+
 def test_page_size_rejects_zero():
     """Zero page size is rejected."""
     from kvcached.utils import _get_page_size
@@ -121,5 +170,14 @@ def test_page_size_rejects_non_integer():
     from kvcached.utils import _get_page_size
 
     with patch.dict(os.environ, {"KVCACHED_PAGE_SIZE_MB": "abc"}):
+        with pytest.raises(ValueError, match="integer"):
+            _get_page_size()
+
+
+def test_page_size_rejects_float_string():
+    """Float string page size is rejected (must be integer)."""
+    from kvcached.utils import _get_page_size
+
+    with patch.dict(os.environ, {"KVCACHED_PAGE_SIZE_MB": "2.5"}):
         with pytest.raises(ValueError, match="integer"):
             _get_page_size()

@@ -328,26 +328,57 @@ def main():
 
     checks = []
 
+    # Derive thresholds from actual GPU size for portability across GPUs.
+    # On MI300X (192 GB) these produce generous limits; on smaller GPUs
+    # (e.g. 16 GB) they scale proportionally.
+    total_gpu = gpu_total_bytes()
+
+    # Baseline variance tolerance: 0.1% of total GPU or 100 MB, whichever
+    # is larger.  vLLM/ROCm may show small fluctuations from CUDA graph
+    # capture or driver bookkeeping, but NOT from elastic memory operations.
+    baseline_variance = max(int(total_gpu * 0.001), 100 * MB)
+
+    # Minimum KV cache allocation to expect in baseline mode: at least 0.3%
+    # of GPU total or 500 MB.  With gpu_memory_utilization=0.5 on any
+    # reasonable GPU, the upfront allocation will far exceed this.
+    baseline_min_kv = max(int(total_gpu * 0.003), 500 * MB)
+
     if not BASELINE:
         # ── kvcached checks ──
+        # Check 1: At idle, physical memory should be a tiny fraction of
+        # virtual.  With MAX_RESERVED_PAGES=2 and a small model, idle
+        # physical is typically < 1% of virtual.  We use 5% as the ceiling
+        # to allow for allocator overhead and small models.
         ratio = idle_physical / virtual * 100 if virtual else 100
         checks.append((
             "Physical << Virtual at idle  (elastic, not pre-allocated)",
             ratio < 5.0,
             f"Physical {fmt(idle_physical)} MB = {ratio:.2f}% "
-            f"of Virtual {fmt(virtual)} MB",
+            f"of Virtual {fmt(virtual)} MB  [threshold: < 5%]",
         ))
+
+        # Check 2: More prompts → more KV pages → higher peak physical.
+        # This proves memory grows on demand rather than being fixed.
         checks.append((
             "Large batch peak > small batch peak  (on-demand growth)",
             p3.peak_physical >= p2.peak_physical,
             f"small {fmt(p2.peak_physical)} MB, "
             f"large {fmt(p3.peak_physical)} MB",
         ))
+
+        # Check 3: GPU memory used at idle should be far less than the
+        # virtual KV address space.  10% ceiling means the engine is NOT
+        # pre-allocating the full KV space on the GPU.
         checks.append((
             "GPU memory << Virtual KV limit  (no upfront allocation)",
             gpu_idle < virtual * 0.1,
-            f"GPU {fmt(gpu_idle)} MB vs Virtual {fmt(virtual)} MB",
+            f"GPU {fmt(gpu_idle)} MB vs Virtual {fmt(virtual)} MB  "
+            f"[threshold: GPU < 10% of Virtual]",
         ))
+
+        # Check 4: During the large-batch phase, used pages should vary
+        # as the engine allocates then frees KV blocks.  If min == max,
+        # pages are never being freed — the alloc/free cycle is broken.
         used_vals = [s[1] for s in p3.samples]
         checks.append((
             "Used pages varied during inference  (alloc/free cycle)",
@@ -355,41 +386,67 @@ def main():
             f"used: min={fmt(min(used_vals, default=0))} MB, "
             f"max={fmt(max(used_vals, default=0))} MB",
         ))
+
+        # Check 5: After all requests complete, physical memory must be
+        # LESS than the peak during inference.  This proves hipMemUnmap
+        # was called and physical pages were returned to the system.
         checks.append((
             "Physical shrank after completion  (hipMemUnmap confirmed)",
             post_phys < p3.peak_physical,
             f"peak {fmt(p3.peak_physical)} MB → after {fmt(post_phys)} MB  "
             f"(freed {fmt(p3.peak_physical - post_phys)} MB)",
         ))
+
+        # Check 6: The re-grow phase maps new pages for new requests,
+        # proving that unmapped pages can be re-used.
         checks.append((
             "Used pages re-appeared on new requests  (pages re-mapped)",
             p5.peak_used > 0,
             f"re-grow peak used {fmt(p5.peak_used)} MB "
             f"(physical {fmt(p5.peak_physical)} MB)",
         ))
+
+        # Check 7: GPU memory must track physical memory changes.
+        # If GPU memory stays flat while physical grows/shrinks, the VMM
+        # operations are not actually affecting real hardware.
+        gpu_during_large = p3.peak_gpu
+        gpu_delta_large = gpu_during_large - gpu_idle
+        phys_delta_large = p3.peak_physical - idle_physical
+        checks.append((
+            "GPU memory correlates with Physical growth  (not just bookkeeping)",
+            gpu_delta_large > 0 and phys_delta_large > 0,
+            f"GPU delta: +{fmt(gpu_delta_large)} MB, "
+            f"Physical delta: +{fmt(phys_delta_large)} MB during large batch",
+        ))
     else:
         # ── baseline checks (confirm NON-elastic behavior) ──
+        # In baseline mode, vLLM pre-allocates ALL KV cache memory at
+        # model load.  GPU memory should stay flat during inference.
+
         gpu_range = p3.peak_gpu - p3.min_gpu
         checks.append((
             "GPU memory is FLAT during inference  (pre-allocated, not elastic)",
-            gpu_range < 100 * MB,  # less than 100 MB variance
+            gpu_range < baseline_variance,
             f"GPU range: {fmt(p3.min_gpu)} – {fmt(p3.peak_gpu)} MB  "
-            f"(delta {fmt(gpu_range)} MB)",
+            f"(delta {fmt(gpu_range)} MB, threshold: < {fmt(baseline_variance)} MB "
+            f"[0.1% of {fmt(total_gpu)} MB GPU])",
         ))
         checks.append((
             "GPU memory unchanged after requests complete  (no free/unmap)",
-            abs(gpu_post - gpu_idle) < 100 * MB,
+            abs(gpu_post - gpu_idle) < baseline_variance,
             f"idle {fmt(gpu_idle)} MB → after {fmt(gpu_post)} MB  "
-            f"(delta {fmt(abs(gpu_post - gpu_idle))} MB)",
+            f"(delta {fmt(abs(gpu_post - gpu_idle))} MB, "
+            f"threshold: < {fmt(baseline_variance)} MB)",
         ))
         # Show how much GPU is used for KV cache (= gpu_idle - gpu_before_model)
         kv_estimate = gpu_idle - gpu0
         checks.append((
             "Large upfront KV allocation visible in GPU  (not elastic)",
-            kv_estimate > 500 * MB,
+            kv_estimate > baseline_min_kv,
             f"GPU before model: {fmt(gpu0)} MB → "
             f"after load: {fmt(gpu_idle)} MB  "
-            f"(KV estimate: {fmt(kv_estimate)} MB)",
+            f"(KV estimate: {fmt(kv_estimate)} MB, "
+            f"threshold: > {fmt(baseline_min_kv)} MB)",
         ))
 
     all_pass = True

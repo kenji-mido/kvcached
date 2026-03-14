@@ -14,6 +14,10 @@
 #
 set -uo pipefail
 
+# NOTE: We use PIPESTATUS[0] below to capture the Docker exit code
+# from pipelines like `docker run ... | grep -v ...`, since $? would
+# capture grep's exit code instead.
+
 REPO_URL="https://github.com/kenji-mido/kvcached.git"
 BRANCH="feature/amd-gpu-support"
 WORK_DIR="${KVCACHED_DIR:-$HOME/kvcached}"
@@ -128,7 +132,7 @@ docker run --rm --entrypoint bash \
     "$VLLM_IMAGE" \
     -c 'cd /kvcached && pip install -e . --no-build-isolation -q 2>&1 | tail -1 && python3 tests/test_elastic_memory_e2e.py 2>&1' \
     | grep -v "^(EngineCore\|^INFO\|^WARNING\|^Processed\|^Rendering\|^\[kvcached\]\|triton_kernels\|SyntaxWarning\|resource_tracker"
-VLLM_ELASTIC=$?
+VLLM_ELASTIC=${PIPESTATUS[0]}
 
 # ── 6. vLLM baseline (no kvcached) ───────────────────────────────────────
 log "vLLM baseline (no kvcached)..."
@@ -138,7 +142,7 @@ docker run --rm --entrypoint bash \
     "$VLLM_IMAGE" \
     -c 'cd /kvcached && pip install -e . --no-build-isolation -q 2>&1 | tail -1 && python3 tests/test_elastic_memory_e2e.py --baseline 2>&1' \
     | grep -v "^(EngineCore\|^INFO\|^WARNING\|^Processed\|^Rendering\|triton_kernels\|SyntaxWarning\|resource_tracker"
-VLLM_BASELINE=$?
+VLLM_BASELINE=${PIPESTATUS[0]}
 
 # ── 7. SGLang elastic memory benchmark ───────────────────────────────────
 log "SGLang + kvcached elastic memory benchmark..."
@@ -148,7 +152,7 @@ docker run --rm \
     "$SGLANG_IMAGE" \
     bash -c 'cd /kvcached && pip install -e . --no-build-isolation -q 2>&1 | tail -1 && python3 tests/test_sglang_e2e.py 2>&1' \
     | grep -v "^\[aiter\]\|^INFO:aiter\|^\[Gloo\]\|^Loading pt\|^Capturing\|clang.*option\|^failed to\|type hints\|compile_template\|start build\|finish build\|import \["
-SGLANG_ELASTIC=$?
+SGLANG_ELASTIC=${PIPESTATUS[0]}
 
 # ── 8. SGLang baseline (no kvcached) ─────────────────────────────────────
 log "SGLang baseline (no kvcached)..."
@@ -158,7 +162,7 @@ docker run --rm \
     "$SGLANG_IMAGE" \
     bash -c 'cd /kvcached && pip install -e . --no-build-isolation -q 2>&1 | tail -1 && python3 tests/test_sglang_e2e.py --baseline 2>&1' \
     | grep -v "^\[aiter\]\|^INFO:aiter\|^\[Gloo\]\|^Loading pt\|^Capturing\|clang.*option\|^failed to\|type hints\|compile_template\|start build\|finish build\|import \["
-SGLANG_BASELINE=$?
+SGLANG_BASELINE=${PIPESTATUS[0]}
 
 # ── 9. Environment config ─────────────────────────────────────────────────
 log "Creating environment setup file..."

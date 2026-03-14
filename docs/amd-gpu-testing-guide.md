@@ -68,12 +68,16 @@ pytest tests/test_gpu_compat.py tests/test_shm_info_tracker.py -v
 
 `test_gpu_compat.py` の内容:
 
-- `test_rocm_detection_sets_is_rocm_true/false` — `torch.version.hip` による ROCm 検出ロジック
+- `test_is_rocm_returns_true_on_hip` — `_is_rocm()` 関数が hip 環境で True を返すこと
+- `test_is_rocm_returns_false_without_hip` — `_is_rocm()` 関数が CUDA 環境で False を返すこと
+- `test_is_rocm_matches_runtime` — モックなしで実行環境の `torch.version.hip` と一致すること
+- `test_setup_py_is_rocm_consistent` — `setup.py` の `IS_ROCM` と `_is_rocm()` が一致すること
 - `test_page_size_default` — デフォルト 2MB
 - `test_page_size_validation_cuda_valid` — CUDA: 2MB, 4MB を受理
 - `test_page_size_validation_rocm_valid` — ROCm: 1MB, 2MB を受理
 - `test_page_size_cuda_rejects_1mb/3mb` — CUDA: 2MB 非倍数を拒否
-- `test_page_size_rejects_zero/negative/non_integer` — 異常値を拒否
+- `test_page_size_rocm_rejects_non_1mb_aligned` — ROCm: 3MB は受理されること（1MB の倍数）
+- `test_page_size_rejects_zero/negative/non_integer/float_string` — 異常値を拒否
 
 ### 3. ROCm VMM テスト (AMD GPU 必須)
 
@@ -86,7 +90,14 @@ kvcached のコア VMM 動作を検証するテスト:
 - `test_init_kvcached_rocm` — init/shutdown。init 直後に `kv_tensors_created() == False` をアサート
 - `test_granularity_query` — `hipMemGetAllocationGranularity` で granularity 取得が成功すること
 - `test_kv_tensor_create` — `create_kv_tensors` がGPU テンソル (`is_cuda`, 正しい dtype, `numel > 0`) を返すこと
-- `test_kv_tensor_map_unmap` — map 後にGPU メモリへ書き込み→読み出しで値が一致すること。マッピング失敗時はセグフォルトまたは値不一致で FAIL
+- `test_kv_tensor_map_unmap` — map 後にGPU メモリへ書き込み→読み出しで値が一致すること
+- `test_map_increases_gpu_memory` — **物理GPU メモリ検証**: 4 compound pages マッピングで `hipMemGetInfo` が +32 MB 増加、unmap で -32 MB 減少すること。VMM が実際にハードウェアメモリに作用していることの証明
+- `test_map_per_page_delta_is_linear` — **リニアスケーリング検証**: 1ページずつマッピングし、各ステップで正確に +8 MB（compound_page_size）の増加を assert。tolerance なし、exact match
+- `test_map_unmap_cycle_returns_memory` — **elastic ライフサイクル検証**: map→write→read→unmap→remap の完全サイクルで、unmap 後にメモリがベースラインに正確に戻り、remap で再び同一デルタ消費されること
+
+**注意**: `map_to_kv_tensors` はバイトオフセット（`compound_page_size` の倍数）を受け取ります。
+`compound_page_size = page_size × num_layers × num_kv_buffers` = 2MB × 2 × 2 = 8MB。
+ページ N のオフセットは `N * 8MB`。小さな整数 `[0, 1, 2, ...]` を渡すと全て page 0 にマッピングされます。
 
 ### 4. Full test suite on ROCm
 
@@ -110,7 +121,7 @@ The benchmark:
 - Monitors KV cache memory via kvcached IPC (Used/Prealloc/Physical/Free/Virtual)
 - Monitors GPU memory via `hipMemGetInfo` (through `torch.cuda.mem_get_info`)
 - Prints timeline with bar chart showing memory changes
-- Verifies 6 checks (elastic growth, shrinkage, hipMemUnmap, re-map)
+- Verifies 7 checks (elastic growth, shrinkage, hipMemUnmap, re-map, GPU-Physical correlation)
 
 ### 6. vLLM/SGLang integration via Docker (recommended)
 
@@ -143,26 +154,31 @@ docker run --rm --entrypoint bash \
         python tests/test_elastic_memory_e2e.py --baseline'
 ```
 
-## Test Runner Script
+## Test Runner Script (Docker-based)
 
-全テストをまとめて実行する場合:
+全テストを Docker コンテナ内で再現可能に実行:
 
 ```bash
-bash scripts/run_amd_tests.sh           # 全 tier
-bash scripts/run_amd_tests.sh --quick   # Tier 1-2 のみ (GPU 不要)
-bash scripts/run_amd_tests.sh --gpu     # Tier 3-4 のみ (GPU 必須)
+bash scripts/run_amd_tests.sh           # 全 tier (9 tiers)
+bash scripts/run_amd_tests.sh --quick   # Tier 1 のみ (ユニットテスト)
+bash scripts/run_amd_tests.sh --gpu     # Tier 3-5 (GPU + E2E)
+bash scripts/run_amd_tests.sh --e2e     # Tier 5 のみ (E2E ベンチマーク)
 ```
 
-| Tier | 内容 | GPU 必須 |
-|------|------|---------|
-| 1a | 共有メモリ (CPU テスト) | No |
-| 1b | ビルド・検出ロジック | No |
-| 2 | pre-commit (lint, format) | No |
-| 3a | ROCm VMM スモーク | Yes |
-| 3b | ページアライアシング | Yes |
-| 4 | KVCacheManager 統合 | Yes |
+| Tier | 内容 | Docker Image | テスト数 |
+|------|------|-------------|---------|
+| 1a | 共有メモリ (CPU テスト) | vLLM ROCm | 8 |
+| 1b | ビルド・ROCm 検出ロジック | vLLM ROCm | 15 |
+| 3a | ROCm VMM + GPU メモリ検証 | vLLM ROCm | 7 |
+| 3b | ページアライアシング | vLLM ROCm | 2 |
+| 4 | KVCacheManager 統合 | vLLM ROCm | 5 |
+| 5a | vLLM + kvcached elastic | vLLM ROCm | 7 checks |
+| 5b | vLLM baseline (非elastic) | vLLM ROCm | 3 checks |
+| 5c | SGLang + kvcached elastic | SGLang ROCm | 7 checks |
+| 5d | SGLang baseline (非elastic) | SGLang ROCm | 3 checks |
 
-実行後、PASS/FAIL/SKIP のサマリーが表示されます。
+実行後、tier ごとの PASS/FAIL/SKIP サマリーが表示されます。
+全テストが Docker 内で実行されるため、ホスト側の Python 環境は不要です。
 
 ## Bugs Fixed During Validation
 

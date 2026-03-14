@@ -9,6 +9,14 @@ requires_rocm = pytest.mark.skipif(
     reason="Requires ROCm/HIP",
 )
 
+MB = 1024 * 1024
+
+
+def _gpu_used_bytes():
+    """Return GPU memory currently used (total - free) via hipMemGetInfo."""
+    free, total = torch.cuda.mem_get_info(0)
+    return total - free
+
 
 @requires_rocm
 def test_init_kvcached_rocm():
@@ -68,7 +76,12 @@ def test_kv_tensor_create():
 
 @requires_rocm
 def test_kv_tensor_map_unmap():
-    """ROCm: map and unmap work correctly — mapped memory is writable."""
+    """ROCm: map and unmap work correctly — mapped memory is writable.
+
+    Uses byte offset 0 (the first compound page). With contiguous_layout,
+    this maps compound_page_size = page_size × num_layers × num_kv_buffers
+    bytes of physical GPU memory.
+    """
     from kvcached.vmm_ops import (
         create_kv_tensors,
         init_kvcached,
@@ -79,7 +92,7 @@ def test_kv_tensor_map_unmap():
 
     init_kvcached(dev_str="cuda:0", page_size=0, contiguous_layout=True)
 
-    page_size = 2 * 1024 * 1024
+    page_size = 2 * MB
     num_layers = 2
     num_kv_buffers = 2
     tensors = create_kv_tensors(
@@ -87,7 +100,7 @@ def test_kv_tensor_map_unmap():
         num_layers=num_layers, num_kv_buffers=num_kv_buffers,
     )
 
-    # Map page at offset 0
+    # Map compound page at byte offset 0
     result = map_to_kv_tensors([0])
     assert result is True, "map_to_kv_tensors should return True on success"
 
@@ -102,4 +115,235 @@ def test_kv_tensor_map_unmap():
     result = unmap_from_kv_tensors([0])
     assert result is True, "unmap_from_kv_tensors should return True on success"
 
+    shutdown_kvcached()
+
+
+@requires_rocm
+def test_map_increases_gpu_memory():
+    """hipMemMap physically backs virtual pages — GPU memory must increase.
+
+    This is the core elastic memory property: mapping a compound page
+    consumes physical GPU RAM observable via hipMemGetInfo.
+
+    IMPORTANT: map_to_kv_tensors takes BYTE OFFSETS (multiples of
+    compound_page_size), not small page indices. With contiguous_layout,
+    compound_page_size = page_size × num_layers × num_kv_buffers.
+    Each compound page maps 8 MB of physical GPU memory.
+    """
+    from kvcached.vmm_ops import (
+        create_kv_tensors,
+        init_kvcached,
+        map_to_kv_tensors,
+        shutdown_kvcached,
+        unmap_from_kv_tensors,
+    )
+
+    init_kvcached(dev_str="cuda:0", page_size=0, contiguous_layout=True)
+
+    page_size = 2 * MB
+    num_layers = 2
+    num_kv_buffers = 2
+    compound_page_size = page_size * num_layers * num_kv_buffers  # 8 MB
+
+    # Create buffer large enough for multiple compound pages.
+    # size arg = per-layer size, so 4 compound pages needs:
+    #   buffer_per_layer = compound_page_size * num_pages / num_layers
+    num_pages = 4
+    buffer_per_layer = compound_page_size * num_pages // num_layers
+    tensors = create_kv_tensors(
+        size=buffer_per_layer, dtype_size=2, dev_str="cuda:0",
+        num_layers=num_layers, num_kv_buffers=num_kv_buffers,
+    )
+
+    torch.cuda.synchronize()
+    gpu_before_map = _gpu_used_bytes()
+
+    # Map 4 compound pages using correct byte offsets.
+    offsets = [p * compound_page_size for p in range(num_pages)]
+    result = map_to_kv_tensors(offsets)
+    assert result is True
+
+    torch.cuda.synchronize()
+    gpu_after_map = _gpu_used_bytes()
+
+    map_delta = gpu_after_map - gpu_before_map
+
+    # 4 compound pages × 8 MB = 32 MB expected.
+    expected = num_pages * compound_page_size
+    assert map_delta >= expected, (
+        f"hipMemMap should consume physical GPU memory: "
+        f"before={gpu_before_map / MB:.1f} MB, after={gpu_after_map / MB:.1f} MB, "
+        f"delta={map_delta / MB:.1f} MB, expected >= {expected / MB:.1f} MB"
+    )
+
+    # Unmap and verify memory is returned
+    result = unmap_from_kv_tensors(offsets)
+    assert result is True
+
+    torch.cuda.synchronize()
+    gpu_after_unmap = _gpu_used_bytes()
+
+    unmap_delta = gpu_after_map - gpu_after_unmap
+
+    assert unmap_delta >= expected, (
+        f"hipMemUnmap should free physical GPU memory: "
+        f"after_map={gpu_after_map / MB:.1f} MB, after_unmap={gpu_after_unmap / MB:.1f} MB, "
+        f"delta={unmap_delta / MB:.1f} MB, expected >= {expected / MB:.1f} MB"
+    )
+
+    shutdown_kvcached()
+
+
+@requires_rocm
+def test_map_per_page_delta_is_linear():
+    """Each compound page adds exactly compound_page_size bytes to GPU.
+
+    Map pages one at a time and verify that hipMemGetInfo reports a
+    consistent per-page delta. This proves that GPU memory scales linearly
+    with the number of mapped pages — the fundamental elastic property.
+    """
+    from kvcached.vmm_ops import (
+        create_kv_tensors,
+        init_kvcached,
+        map_to_kv_tensors,
+        shutdown_kvcached,
+        unmap_from_kv_tensors,
+    )
+
+    init_kvcached(dev_str="cuda:0", page_size=0, contiguous_layout=True)
+
+    page_size = 2 * MB
+    num_layers = 2
+    num_kv_buffers = 2
+    compound_page_size = page_size * num_layers * num_kv_buffers  # 8 MB
+
+    num_pages = 4
+    buffer_per_layer = compound_page_size * num_pages // num_layers
+    tensors = create_kv_tensors(
+        size=buffer_per_layer, dtype_size=2, dev_str="cuda:0",
+        num_layers=num_layers, num_kv_buffers=num_kv_buffers,
+    )
+
+    torch.cuda.synchronize()
+
+    # Map one page at a time, record GPU memory at each step.
+    gpu_readings = [_gpu_used_bytes()]
+    for p in range(num_pages):
+        offset = p * compound_page_size
+        map_to_kv_tensors([offset])
+        torch.cuda.synchronize()
+        gpu_readings.append(_gpu_used_bytes())
+
+    # Verify each step increased by compound_page_size (8 MB).
+    for i in range(num_pages):
+        delta = gpu_readings[i + 1] - gpu_readings[i]
+        assert delta == compound_page_size, (
+            f"Page {i}: GPU delta={delta / MB:.1f} MB, "
+            f"expected {compound_page_size / MB:.1f} MB. "
+            f"GPU readings: {[r / MB for r in gpu_readings]}"
+        )
+
+    # Unmap one page at a time, verify symmetric decrease.
+    for p in range(num_pages):
+        offset = p * compound_page_size
+        before = _gpu_used_bytes()
+        unmap_from_kv_tensors([offset])
+        torch.cuda.synchronize()
+        after = _gpu_used_bytes()
+        delta = before - after
+        assert delta == compound_page_size, (
+            f"Unmap page {p}: GPU delta=-{delta / MB:.1f} MB, "
+            f"expected -{compound_page_size / MB:.1f} MB"
+        )
+
+    shutdown_kvcached()
+
+
+@requires_rocm
+def test_map_unmap_cycle_returns_memory():
+    """Map→write→read→unmap→remap cycle: GPU memory returns to baseline.
+
+    Verifies the full elastic lifecycle:
+    1. Map pages → GPU memory increases by compound_page_size per page
+    2. Write and read data on mapped pages → data integrity
+    3. Unmap pages → GPU memory returns to baseline
+    4. Remap the same pages → GPU memory increases again
+    """
+    from kvcached.vmm_ops import (
+        create_kv_tensors,
+        init_kvcached,
+        map_to_kv_tensors,
+        shutdown_kvcached,
+        unmap_from_kv_tensors,
+    )
+
+    init_kvcached(dev_str="cuda:0", page_size=0, contiguous_layout=True)
+
+    page_size = 2 * MB
+    num_layers = 2
+    num_kv_buffers = 2
+    compound_page_size = page_size * num_layers * num_kv_buffers  # 8 MB
+
+    num_pages = 2
+    buffer_per_layer = compound_page_size * num_pages // num_layers
+    tensors = create_kv_tensors(
+        size=buffer_per_layer, dtype_size=2, dev_str="cuda:0",
+        num_layers=num_layers, num_kv_buffers=num_kv_buffers,
+    )
+
+    torch.cuda.synchronize()
+    gpu_baseline = _gpu_used_bytes()
+
+    # ── Cycle 1: map, write, verify, unmap ──
+    offsets = [p * compound_page_size for p in range(num_pages)]
+    assert map_to_kv_tensors(offsets) is True
+    torch.cuda.synchronize()
+
+    gpu_mapped = _gpu_used_bytes()
+    map_delta = gpu_mapped - gpu_baseline
+    expected_delta = num_pages * compound_page_size
+    assert map_delta == expected_delta, (
+        f"Map {num_pages} pages: delta={map_delta / MB:.1f} MB, "
+        f"expected {expected_delta / MB:.1f} MB"
+    )
+
+    # Write unique values per compound page and read back
+    t = tensors[0]
+    elements_per_compound_page = compound_page_size // 2  # dtype_size=2
+    for p in range(num_pages):
+        idx = p * elements_per_compound_page
+        t[idx] = float(p * 1000 + 42)
+    torch.cuda.synchronize()
+
+    for p in range(num_pages):
+        idx = p * elements_per_compound_page
+        val = t[idx].item()
+        expected_val = float(p * 1000 + 42)
+        assert val == expected_val, (
+            f"Page {p} write/read failed: expected {expected_val}, got {val}"
+        )
+
+    # Unmap — GPU memory must return to baseline exactly
+    assert unmap_from_kv_tensors(offsets) is True
+    torch.cuda.synchronize()
+    gpu_unmapped = _gpu_used_bytes()
+
+    assert gpu_unmapped == gpu_baseline, (
+        f"After unmap, GPU memory should return to baseline: "
+        f"baseline={gpu_baseline / MB:.1f} MB, "
+        f"after_unmap={gpu_unmapped / MB:.1f} MB"
+    )
+
+    # ── Cycle 2: remap same pages ──
+    assert map_to_kv_tensors(offsets) is True
+    torch.cuda.synchronize()
+    gpu_remapped = _gpu_used_bytes()
+
+    remap_delta = gpu_remapped - gpu_unmapped
+    assert remap_delta == expected_delta, (
+        f"Remap {num_pages} pages: delta={remap_delta / MB:.1f} MB, "
+        f"expected {expected_delta / MB:.1f} MB"
+    )
+
+    assert unmap_from_kv_tensors(offsets) is True
     shutdown_kvcached()
