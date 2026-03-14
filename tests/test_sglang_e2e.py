@@ -21,7 +21,6 @@ if not BASELINE:
     os.environ["KVCACHED_AUTOPATCH"] = "1"
     os.environ["KVCACHED_MAX_RESERVED_PAGES"] = "2"
     os.environ["KVCACHED_MIN_RESERVED_PAGES"] = "1"
-    import kvcached.integration.sglang.autopatch  # noqa: E402
 
 from sglang import Engine  # noqa: E402
 
@@ -77,7 +76,7 @@ def print_memory_bar(label, used, prealloc, virtual, gpu, bar_width=60):
     free = virtual - physical if virtual else 0
 
     print(f"\n  ┌─ {label}")
-    print(f"  │")
+    print("  │")
 
     if virtual > 0:
         pct = physical / virtual * 100
@@ -87,29 +86,29 @@ def print_memory_bar(label, used, prealloc, virtual, gpu, bar_width=60):
         print(f"  │  │  └ Prealloc (reserved) : {fmt(prealloc):>10s} MB")
         print(f"  │  Free (unmapped)          : {fmt(free):>10s} MB")
         print(f"  │  GPU total used           : {fmt(gpu):>10s} MB")
-        print(f"  │")
+        print("  │")
         p_w = max(int(physical / virtual * bar_width), 1 if physical > 0 else 0)
-        print(f"  │  Virtual scale:")
+        print("  │  Virtual scale:")
         print(f"  │  [{'▓' * p_w}{'░' * (bar_width - p_w)}]")
-        print(f"  │   ▓=Physical  ░=Free(unmapped)")
+        print("  │   ▓=Physical  ░=Free(unmapped)")
         if physical > 0:
             u_w = max(int(used / physical * bar_width), 1 if used > 0 else 0)
-            print(f"  │")
-            print(f"  │  Physical breakdown:")
+            print("  │")
+            print("  │  Physical breakdown:")
             print(f"  │  [{'█' * u_w}{'▒' * (bar_width - u_w)}]")
             print(f"  │   █=Used({fmt(used)} MB)  ▒=Prealloc({fmt(prealloc)} MB)")
     else:
         gpu_total = gpu_total_bytes()
         pct = gpu / gpu_total * 100 if gpu_total else 0
-        print(f"  │  KV cache breakdown      :        N/A  (kvcached disabled)")
+        print("  │  KV cache breakdown      :        N/A  (kvcached disabled)")
         print(f"  │  GPU total used           : {fmt(gpu):>10s} MB  ({pct:.1f}% of {fmt(gpu_total)} MB)")
-        print(f"  │")
+        print("  │")
         g_w = max(int(pct / 100 * bar_width), 1 if gpu > 0 else 0)
-        print(f"  │  GPU scale:")
+        print("  │  GPU scale:")
         print(f"  │  [{'█' * g_w}{'░' * (bar_width - g_w)}]")
-        print(f"  │   █=Used  ░=Free")
+        print("  │   █=Used  ░=Free")
 
-    print(f"  └")
+    print("  └")
 
 
 # ── memory poller ─────────────────────────────────────────────────────────
