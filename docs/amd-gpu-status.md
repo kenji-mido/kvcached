@@ -2,9 +2,11 @@
 
 Last updated: 2026-03-14
 
-## Current Status: Validated on AMD Instinct MI300X (ROCm 7.1)
+## Current Status: Validated on AMD Instinct MI300X — vLLM & SGLang
 
-All HIP VMM APIs verified on real hardware. vLLM integration tested end-to-end.
+All HIP VMM APIs verified on real hardware.
+Both vLLM and SGLang integration tested end-to-end via official ROCm Docker images.
+Elastic memory (hipMemMap/hipMemUnmap) confirmed with visual benchmarks.
 
 ## Completed
 
@@ -19,9 +21,10 @@ All HIP VMM APIs verified on real hardware. vLLM integration tested end-to-end.
 - [x] `kvcached/utils.py` — page size validation relaxed on ROCm
 - [x] CUDA regression — build passes, pre-commit passes, CPU tests pass
 - [x] Test infrastructure — `conftest.py` markers, `test_gpu_compat.py`, `test_rocm_vmm.py`
-- [x] E2E elastic memory benchmark — `tests/test_elastic_memory_e2e.py` (kvcached vs baseline)
+- [x] E2E elastic memory benchmark — `tests/test_elastic_memory_e2e.py` (vLLM, kvcached vs baseline)
+- [x] E2E elastic memory benchmark — `tests/test_sglang_e2e.py` (SGLang, kvcached vs baseline)
 - [x] Documentation — `docs/amd-gpu-testing-guide.md`, `docs/amd-gpu-status.md`
-- [x] Scripts — `setup_amd_dev.sh` (full environment: kvcached + vLLM ROCm source build)
+- [x] Scripts — `setup_amd_dev.sh` (Docker-based: pulls official ROCm images, runs all tests)
 
 ## Validated on Hardware
 
@@ -73,7 +76,13 @@ Tested with official Docker image (`lmsysorg/sglang-daily:v0.5.9-rocm720-mi30x`)
 | SGLang v0.5.9 ROCm Docker | PASS |
 | Autopatch (4/4 patches applied) | PASS |
 | Inference with `facebook/opt-125m` | PASS — correct text generated |
+| Elastic memory benchmark (6 checks) | ALL PASS |
 | kvcached IPC (kvctl) memory tracking | PASS — Virtual/Physical/Used/Prealloc visible |
+
+SGLang elastic benchmark results (64 prompts × 512 tokens, `MAX_RESERVED_PAGES=2`):
+- Physical peak: 912 MB (0.93% of 97,648 MB virtual)
+- hipMemUnmap freed: 768 MB after completion
+- GPU memory correlated with Physical changes
 
 Note: SGLang on bare-metal (pip install) is not supported by SGLang itself.
 The official Docker image is the recommended and tested deployment method.
@@ -111,12 +120,13 @@ Baseline comparison (vanilla vLLM without kvcached):
 
 1. **PR to `kenji-mido/kvcached` main branch** — merge `feature/amd-gpu-support`
 2. **Upstream to original kvcached repo** — the 3 C++ fixes + setup.py change are minimal and safe
+3. **SGLang PR** — report `is_cuda_alike()` vs `is_cuda()` bug in `flashinfer_trtllm.py` (affects bare-metal ROCm only, Docker image not affected)
 
 ### Remaining Work
 
-3. **Multi-GPU testing** — not yet tested with tensor parallelism on ROCm
-4. **Larger model testing** — validated with opt-125m; test with larger models under memory pressure
-5. **CI/CD** — add ROCm CI pipeline (requires AMD GPU runner)
+4. **Multi-GPU testing** — not yet tested with tensor parallelism on ROCm
+5. **Larger model testing** — validated with opt-125m; test with larger models under memory pressure
+6. **CI/CD** — add ROCm CI pipeline (requires AMD GPU runner or Docker-in-Docker)
 
 ## Test Environments
 
