@@ -120,13 +120,12 @@ Baseline comparison (vanilla vLLM without kvcached):
 
 1. **PR to `kenji-mido/kvcached` main branch** — merge `feature/amd-gpu-support`
 2. **Upstream to original kvcached repo** — the 3 C++ fixes + setup.py change are minimal and safe
-3. **SGLang PR** — report `is_cuda_alike()` vs `is_cuda()` bug in `flashinfer_trtllm.py` (affects bare-metal ROCm only, Docker image not affected)
 
 ### Remaining Work
 
-4. **Multi-GPU testing** — not yet tested with tensor parallelism on ROCm
-5. **Larger model testing** — validated with opt-125m; test with larger models under memory pressure
-6. **CI/CD** — add ROCm CI pipeline (requires AMD GPU runner or Docker-in-Docker)
+3. **Multi-GPU testing** — not yet tested with tensor parallelism on ROCm
+4. **Larger model testing** — validated with opt-125m; test with larger models under memory pressure
+5. **CI/CD** — add ROCm CI pipeline (requires AMD GPU runner or Docker-in-Docker)
 
 ## Test Environments
 
