@@ -70,6 +70,13 @@ def get_extensions():
     ext_library_dirs = library_paths(device_type="cuda")
 
     if is_hip_build:
+        # ROCm headers/libs may not be in PyTorch's include_paths().
+        # Add /opt/rocm explicitly so hip/hip_runtime.h is found.
+        rocm_home = os.environ.get("ROCM_HOME", "/opt/rocm")
+        ext_include_dirs.append(os.path.join(rocm_home, "include"))
+        ext_library_dirs.append(os.path.join(rocm_home, "lib"))
+
+    if is_hip_build:
         # HIP builds: use CppExtension to avoid PyTorch's hipify step.
         # Our code already handles HIP natively via gpu_vmm.hpp conditional
         # compilation, so hipify is unnecessary and breaks torch headers.

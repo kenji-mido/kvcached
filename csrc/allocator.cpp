@@ -245,6 +245,15 @@ std::vector<at::Tensor> FTensorAllocator::create_kv_tensors_contiguous_(
   // num_layers to get total size
   size_t total_kv_size = size * num_layers;
 
+  // Ensure total_kv_size is a multiple of compound_page_size.
+  // Without this, the virtual allocation is smaller than compound_page_size
+  // and init_with_zero_() segfaults when mapping the zero page.
+  if (total_kv_size % compound_page_size != 0) {
+    total_kv_size =
+        ((total_kv_size + compound_page_size - 1) / compound_page_size) *
+        compound_page_size;
+  }
+
   // Create the single contiguous KV tensor (contains K and V for all layers)
   auto contiguous_name = std::string(kv_prefix) + "contiguous";
   contiguous_kv_tensor_ =
@@ -291,12 +300,18 @@ void FTensorAllocator::init_gpu_() {
   int dev_idx = dev_.index() >= 0 ? dev_.index() : gpu_vmm::current_device();
   CHECK_GPU(gpu_vmm::set_device(dev_idx));
 
+#if defined(KVCACHED_USE_CUDA)
+  // ROCm bug: hipDeviceAttributeVirtualMemoryManagementSupported returns 0
+  // even on GPUs that fully support VMM (e.g. MI300X with ROCm 7.1).
+  // Skip this check on HIP — if VMM is truly unsupported, subsequent
+  // hipMemCreate/hipMemMap calls will fail with a clear error.
   int supports_vmm = 0;
   CHECK_GPU(gpu_vmm::get_vmm_support(&supports_vmm, dev_idx));
   ASSERT(supports_vmm != 0,
          "VMM is not supported on %s device %d. kvcached requires GPU VMM "
          "support.",
          gpu_vmm::backend_name(), dev_idx);
+#endif
 
   auto prop = gpu_vmm::make_pinned_device_allocation_prop(dev_idx);
   size_t chunk_sz = 0;
