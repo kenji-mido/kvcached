@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-FileCopyrightText: Copyright contributors to the kvcached project
+# SPDX-License-Identifier: Apache-2.0
+
 """
 Diagnostic: prove that hipMemMap/hipMemUnmap physically change GPU memory.
 
@@ -37,7 +40,7 @@ def main():
     print()
 
     used, free, total = gpu_info()
-    print(f"[Step 0] Before init")
+    print("[Step 0] Before init")
     print(f"  GPU used: {used:,.1f} MB / {total:,.1f} MB (free: {free:,.1f} MB)")
     print()
 
@@ -47,7 +50,7 @@ def main():
     torch.cuda.synchronize()
 
     used, free, total = gpu_info()
-    print(f"[Step 1] After init_kvcached (no tensors yet)")
+    print("[Step 1] After init_kvcached (no tensors yet)")
     print(f"  GPU used: {used:,.1f} MB / {total:,.1f} MB (free: {free:,.1f} MB)")
     print()
 
@@ -69,7 +72,7 @@ def main():
     torch.cuda.synchronize()
 
     used_after_create, free_c, _ = gpu_info()
-    print(f"[Step 2] After create_kv_tensors (virtual reserved, zero_page mapped)")
+    print("[Step 2] After create_kv_tensors (virtual reserved, zero_page mapped)")
     print(f"  GPU used: {used_after_create:,.1f} MB (free: {free_c:,.1f} MB)")
     print(f"  Tensors: {len(tensors)}, shape={tensors[0].shape}, dtype={tensors[0].dtype}")
     print(f"  compound_page_size: {compound_page_size / MB:.0f} MB")
