@@ -3,7 +3,6 @@
 
 import pytest
 import torch
-
 from conftest import gpu_used_bytes
 
 requires_rocm = pytest.mark.skipif(
