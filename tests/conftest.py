@@ -18,3 +18,15 @@ def gpu_backend():
     elif torch.cuda.is_available():
         return "cuda"
     return None
+
+
+def gpu_used_bytes(device=0):
+    """Return GPU memory currently used (total - free) via mem_get_info."""
+    free, total = torch.cuda.mem_get_info(device)
+    return total - free
+
+
+def gpu_total_bytes(device=0):
+    """Return total GPU memory via mem_get_info."""
+    _, total = torch.cuda.mem_get_info(device)
+    return total

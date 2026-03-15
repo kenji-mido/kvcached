@@ -398,7 +398,7 @@ def main():
         ))
 
         # Check 6: The re-grow phase maps new pages for new requests,
-        # proving that unmapped pages can be re-used.
+        # proving that unmapped pages can be reused.
         checks.append((
             "Used pages re-appeared on new requests  (pages re-mapped)",
             p5.peak_used > 0,
