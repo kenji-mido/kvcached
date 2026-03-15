@@ -25,8 +25,8 @@ static inline int resolve_device_index(const c10::Device &dev) {
 
 static inline generic_ptr_t alloc_virtual_mem(const c10::Device &dev,
                                               size_t size) {
-  size_t alignment_2mb = 2 * 1024 * 1024;
-  ASSERT(size % alignment_2mb == 0,
+  size_t alignment = kGPUAllocGranularity;
+  ASSERT(size % alignment == 0,
          "alloc size not aligned."); // Ensure alignment.
 
   generic_ptr_t vaddr;
@@ -35,7 +35,7 @@ static inline generic_ptr_t alloc_virtual_mem(const c10::Device &dev,
   // because PyTorch's ROCm build masquerades HIP devices as CUDA.
   if (dev.is_cuda()) {
     CHECK_GPU(gpu_vmm::address_reserve(
-        reinterpret_cast<void **>(&vaddr), size, alignment_2mb,
+        reinterpret_cast<void **>(&vaddr), size, alignment,
         reinterpret_cast<void *>(kStartAddr + offset)));
   } else {
     vaddr = mmap(reinterpret_cast<void *>(kStartAddr + offset), size,

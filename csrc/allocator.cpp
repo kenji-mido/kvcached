@@ -14,6 +14,8 @@
 namespace kvcached {
 // Global configurable page size
 size_t kPageSize = 2 * 1024 * 1024; // Default 2MB
+// GPU allocation granularity (set at runtime by init_gpu_)
+size_t kGPUAllocGranularity = 2 * 1024 * 1024; // Default 2MB
 
 std::unique_ptr<FTensorAllocator> FTensorAllocator::g_allocator_;
 std::mutex FTensorAllocator::g_allocator_mutex_;
@@ -316,6 +318,7 @@ void FTensorAllocator::init_gpu_() {
   auto prop = gpu_vmm::make_pinned_device_allocation_prop(dev_idx);
   size_t chunk_sz = 0;
   CHECK_GPU(gpu_vmm::get_allocation_granularity(&chunk_sz, &prop));
+  kGPUAllocGranularity = chunk_sz;
   ASSERT(kPageSize % chunk_sz == 0,
          "Invalid page size: %lu must be a multiple of %s granularity %lu\n",
          kPageSize, gpu_vmm::backend_name(), chunk_sz);
