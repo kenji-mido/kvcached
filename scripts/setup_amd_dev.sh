@@ -18,7 +18,7 @@ set -uo pipefail
 # from pipelines like `docker run ... | grep -v ...`, since $? would
 # capture grep's exit code instead.
 
-REPO_URL="https://github.com/kenji-mido/kvcached.git"
+REPO_URL="https://github.com/midokura/kvcached.git"
 BRANCH="feature/amd-upstream-rebase"
 WORK_DIR="${KVCACHED_DIR:-$HOME/kvcached}"
 
